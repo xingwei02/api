@@ -17,6 +17,17 @@ func TestBuildBotNotifyRequestURLReplacesPath(t *testing.T) {
 	}
 }
 
+func TestBuildBotNotifyRequestURLReplacesOrderPaidPath(t *testing.T) {
+	got, err := buildBotNotifyRequestURL("https://bot.example.com/internal/order-fulfilled", "/internal/order-paid")
+	if err != nil {
+		t.Fatalf("build bot notify request url failed: %v", err)
+	}
+	want := "https://bot.example.com/internal/order-paid"
+	if got != want {
+		t.Fatalf("request url want %s got %s", want, got)
+	}
+}
+
 func TestBuildOrderFulfillmentEmailPayloadNilOrder(t *testing.T) {
 	if got := buildOrderFulfillmentEmailPayload(nil); got != "" {
 		t.Fatalf("expected empty payload for nil order, got %q", got)

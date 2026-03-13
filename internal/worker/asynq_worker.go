@@ -467,6 +467,12 @@ func (c *Consumer) handleBotNotify(_ context.Context, task *asynq.Task) error {
 		"telegram_user_id": payload.TelegramUserID,
 	}
 	switch payload.EventType {
+	case queue.BotNotifyEventOrderPaid:
+		if payload.OrderID == 0 {
+			logger.Debugw("worker_bot_notify_skip_invalid", "event_type", payload.EventType, "order_id", payload.OrderID, "telegram_user_id", payload.TelegramUserID)
+			return nil
+		}
+		path = "/internal/order-paid"
 	case "", queue.BotNotifyEventOrderFulfilled:
 		if payload.OrderID == 0 {
 			logger.Debugw("worker_bot_notify_skip_invalid", "event_type", payload.EventType, "order_id", payload.OrderID, "telegram_user_id", payload.TelegramUserID)

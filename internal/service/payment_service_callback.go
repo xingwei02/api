@@ -489,6 +489,7 @@ func (s *PaymentService) enqueueOrderPaidAsync(order *models.Order, payment *mod
 		}
 	}
 	s.enqueueOrderPaidNotificationAsync(order, payment, log)
+	s.enqueueOrderPaidBotNotifyAsync(order, log)
 	s.enqueueExceptionAlertCheckAsync("order_paid", log)
 
 	if s.queueClient == nil {
@@ -633,6 +634,38 @@ func (s *PaymentService) enqueueWalletRechargeSuccessAsync(recharge *models.Wall
 		log.Warnw("notification_enqueue_wallet_recharge_failed",
 			"recharge_id", recharge.ID,
 			"recharge_no", recharge.RechargeNo,
+			"error", err,
+		)
+	}
+}
+
+func (s *PaymentService) enqueueOrderPaidBotNotifyAsync(order *models.Order, log *zap.SugaredLogger) {
+	if s.queueClient == nil || order == nil || order.UserID == 0 || s.userOAuthIdentityRepo == nil {
+		return
+	}
+
+	identity, err := s.userOAuthIdentityRepo.GetByUserProvider(order.UserID, constants.UserOAuthProviderTelegram)
+	if err != nil {
+		log.Warnw("order_paid_notify_bot_fetch_identity_failed",
+			"order_id", order.ID,
+			"user_id", order.UserID,
+			"error", err,
+		)
+		return
+	}
+	if identity == nil || strings.TrimSpace(identity.ProviderUserID) == "" {
+		return
+	}
+
+	if err := s.queueClient.EnqueueBotNotify(queue.BotNotifyPayload{
+		EventType:      queue.BotNotifyEventOrderPaid,
+		OrderID:        order.ID,
+		TelegramUserID: strings.TrimSpace(identity.ProviderUserID),
+	}); err != nil {
+		log.Warnw("order_paid_notify_bot_enqueue_failed",
+			"order_id", order.ID,
+			"order_no", order.OrderNo,
+			"user_id", order.UserID,
 			"error", err,
 		)
 	}

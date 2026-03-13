@@ -197,6 +197,8 @@ type BotNotifyPayload struct {
 }
 
 const (
+	// BotNotifyEventOrderPaid 订单支付成功通知事件。
+	BotNotifyEventOrderPaid = "order_paid"
 	// BotNotifyEventOrderFulfilled 订单交付通知事件。
 	BotNotifyEventOrderFulfilled = "order_fulfilled"
 	// BotNotifyEventWalletRechargeSucceeded 钱包充值成功通知事件。

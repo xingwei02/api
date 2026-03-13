@@ -226,6 +226,7 @@ func (h *Handler) CreateWalletRecharge(c *gin.Context) {
 			"status":     result.Payment.Status,
 			"pay_url":    result.Payment.PayURL,
 			"qr_code":    result.Payment.QRCode,
+			"expires_at": result.Payment.ExpiredAt,
 		},
 	})
 }
