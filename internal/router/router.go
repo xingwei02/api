@@ -242,6 +242,7 @@ func SetupRouter(cfg *config.Config, c *provider.Container) *gin.Engine {
 				authorized.GET("/products/:id", adminHandler.GetAdminProduct)
 				authorized.POST("/products", adminHandler.CreateProduct)
 				authorized.PUT("/products/:id", adminHandler.UpdateProduct)
+				authorized.PATCH("/products/:id", adminHandler.QuickUpdateProduct)
 				authorized.DELETE("/products/:id", adminHandler.DeleteProduct)
 
 				// 文章管理

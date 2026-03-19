@@ -733,6 +733,21 @@ func (s *ProductService) Delete(id string) error {
 	return s.repo.Delete(id)
 }
 
+// QuickUpdate 快速更新商品部分字段（如 is_active、sort_order）
+func (s *ProductService) QuickUpdate(id string, fields map[string]interface{}) (*models.Product, error) {
+	product, err := s.repo.GetByID(id)
+	if err != nil {
+		return nil, err
+	}
+	if product == nil {
+		return nil, ErrNotFound
+	}
+	if err := s.repo.QuickUpdate(id, fields); err != nil {
+		return nil, err
+	}
+	return s.repo.GetByID(id)
+}
+
 // ApplyAutoStockCounts 聚合卡密自动发货库存信息并填充到商品中
 func (s *ProductService) ApplyAutoStockCounts(products []models.Product) error {
 	var productIDs []uint

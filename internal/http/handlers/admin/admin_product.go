@@ -268,6 +268,51 @@ func (h *Handler) UpdateProduct(c *gin.Context) {
 	response.Success(c, product)
 }
 
+// QuickUpdateProductRequest 快速更新商品请求
+type QuickUpdateProductRequest struct {
+	IsActive   *bool `json:"is_active"`
+	SortOrder  *int  `json:"sort_order"`
+	CategoryID *uint `json:"category_id"`
+}
+
+// QuickUpdateProduct 快速更新商品（状态/排序/分类）
+func (h *Handler) QuickUpdateProduct(c *gin.Context) {
+	id := c.Param("id")
+
+	var req QuickUpdateProductRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		shared.RespondBindError(c, err)
+		return
+	}
+
+	fields := make(map[string]interface{})
+	if req.IsActive != nil {
+		fields["is_active"] = *req.IsActive
+	}
+	if req.SortOrder != nil {
+		fields["sort_order"] = *req.SortOrder
+	}
+	if req.CategoryID != nil {
+		fields["category_id"] = *req.CategoryID
+	}
+	if len(fields) == 0 {
+		shared.RespondError(c, response.CodeBadRequest, "error.bad_request", nil)
+		return
+	}
+
+	product, err := h.ProductService.QuickUpdate(id, fields)
+	if err != nil {
+		if errors.Is(err, service.ErrNotFound) {
+			shared.RespondError(c, response.CodeNotFound, "error.product_not_found", nil)
+			return
+		}
+		shared.RespondError(c, response.CodeInternal, "error.product_update_failed", err)
+		return
+	}
+
+	response.Success(c, product)
+}
+
 // applyUpstreamDisplayTypes 将 upstream 类型商品的 FulfillmentType 替换为上游的实际交付类型，并填充库存字段
 func (h *Handler) applyUpstreamDisplayTypes(products []models.Product) {
 	var upstreamIDs []uint

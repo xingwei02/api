@@ -24,6 +24,7 @@ type ProductRepository interface {
 	ReserveManualStock(productID uint, quantity int) (int64, error)
 	ReleaseManualStock(productID uint, quantity int) (int64, error)
 	ConsumeManualStock(productID uint, quantity int) (int64, error)
+	QuickUpdate(id string, fields map[string]interface{}) error
 	Transaction(fn func(tx *gorm.DB) error) error
 	WithTx(tx *gorm.DB) ProductRepository
 }
@@ -215,6 +216,11 @@ func (r *GormProductRepository) Create(product *models.Product) error {
 // Update 更新商品
 func (r *GormProductRepository) Update(product *models.Product) error {
 	return r.db.Save(product).Error
+}
+
+// QuickUpdate 快速更新商品指定字段
+func (r *GormProductRepository) QuickUpdate(id string, fields map[string]interface{}) error {
+	return r.db.Model(&models.Product{}).Where("id = ?", id).Updates(fields).Error
 }
 
 // Delete 删除商品
