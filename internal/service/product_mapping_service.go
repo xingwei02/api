@@ -105,17 +105,18 @@ func (s *ProductMappingService) ImportUpstreamProduct(connectionID uint, upstrea
 	// 确定交付类型：上游商品映射后统一使用 upstream 类型
 	fulfillmentType := constants.FulfillmentTypeUpstream
 
-	// 解析价格（应用连接加价比例）
+	// 解析价格（先汇率转换，再应用加价比例）
+	exchangeRate := conn.ExchangeRate
 	markupPercent := conn.PriceMarkupPercent
 	roundingMode := conn.PriceRoundingMode
 
 	priceAmount, _ := decimal.NewFromString(upProduct.PriceAmount)
-	priceAmount = CalculateMarkedUpPrice(priceAmount, markupPercent, roundingMode)
+	priceAmount = CalculateLocalPrice(priceAmount, exchangeRate, markupPercent, roundingMode)
 	if priceAmount.LessThanOrEqual(decimal.Zero) && len(upProduct.SKUs) > 0 {
-		// 取加价后 SKU 最低价
+		// 取转换加价后 SKU 最低价
 		for _, sku := range upProduct.SKUs {
 			skuPrice, _ := decimal.NewFromString(sku.PriceAmount)
-			localPrice := CalculateMarkedUpPrice(skuPrice, markupPercent, roundingMode)
+			localPrice := CalculateLocalPrice(skuPrice, exchangeRate, markupPercent, roundingMode)
 			if localPrice.GreaterThan(decimal.Zero) && (priceAmount.IsZero() || localPrice.LessThan(priceAmount)) {
 				priceAmount = localPrice
 			}
@@ -163,7 +164,7 @@ func (s *ProductMappingService) ImportUpstreamProduct(connectionID uint, upstrea
 		localSKUs := make([]models.ProductSKU, 0, len(upProduct.SKUs))
 		for _, upSKU := range upProduct.SKUs {
 			skuPrice, _ := decimal.NewFromString(upSKU.PriceAmount)
-			localPrice := CalculateMarkedUpPrice(skuPrice, markupPercent, roundingMode)
+			localPrice := CalculateLocalPrice(skuPrice, exchangeRate, markupPercent, roundingMode)
 			localSKU := models.ProductSKU{
 				ProductID:      product.ID,
 				SKUCode:        upSKU.SKUCode,
@@ -464,7 +465,7 @@ func (s *ProductMappingService) SyncProduct(mappingID uint) error {
 			localSKU.IsActive = upSKU.IsActive
 			// 如果启用了自动同步价格，按加价比例更新本地售价
 			if conn.AutoSyncPrice {
-				newLocalPrice := CalculateMarkedUpPrice(upPrice, conn.PriceMarkupPercent, conn.PriceRoundingMode)
+				newLocalPrice := CalculateLocalPrice(upPrice, conn.ExchangeRate, conn.PriceMarkupPercent, conn.PriceRoundingMode)
 				localSKU.PriceAmount = models.NewMoneyFromDecimal(newLocalPrice.Round(2))
 			}
 			_ = s.productSKURepo.Update(localSKU)
@@ -478,7 +479,7 @@ func (s *ProductMappingService) SyncProduct(mappingID uint) error {
 		}
 
 		skuPrice, _ := decimal.NewFromString(upSKU.PriceAmount)
-		localPrice := CalculateMarkedUpPrice(skuPrice, conn.PriceMarkupPercent, conn.PriceRoundingMode)
+		localPrice := CalculateLocalPrice(skuPrice, conn.ExchangeRate, conn.PriceMarkupPercent, conn.PriceRoundingMode)
 		newLocalSKU := models.ProductSKU{
 			ProductID:      mapping.LocalProductID,
 			SKUCode:        upSKU.SKUCode,
@@ -612,7 +613,7 @@ func (s *ProductMappingService) ReapplyMarkup(connectionID uint) (int, error) {
 		}
 
 		for _, sm := range skuMappings {
-			newLocalPrice := CalculateMarkedUpPrice(sm.UpstreamPrice.Decimal, conn.PriceMarkupPercent, conn.PriceRoundingMode)
+			newLocalPrice := CalculateLocalPrice(sm.UpstreamPrice.Decimal, conn.ExchangeRate, conn.PriceMarkupPercent, conn.PriceRoundingMode)
 			localSKU, err := s.productSKURepo.GetByID(sm.LocalSKUID)
 			if err != nil || localSKU == nil {
 				continue

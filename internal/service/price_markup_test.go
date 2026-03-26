@@ -42,3 +42,39 @@ func TestCalculateMarkedUpPrice(t *testing.T) {
 		})
 	}
 }
+
+func TestCalculateLocalPrice(t *testing.T) {
+	tests := []struct {
+		name     string
+		upstream string
+		rate     string
+		markup   string
+		rounding string
+		expected string
+	}{
+		{"USD to CNY with markup", "1.00", "7.2", "50", "none", "10.80"},
+		{"rate 1 same as no conversion", "10.00", "1", "50", "none", "15.00"},
+		{"rate 0 treated as 1", "10.00", "0", "50", "none", "15.00"},
+		{"negative rate treated as 1", "10.00", "-1", "50", "none", "15.00"},
+		{"rate with no markup", "1.00", "7.2", "0", "none", "7.20"},
+		{"rate with ceil_int", "1.00", "7.2", "50", "ceil_int", "11.00"},
+		{"rate with ceil_tenth", "1.00", "7.35", "0", "ceil_tenth", "7.35"},
+		{"rate with ceil_tenth fractional", "1.00", "7.34", "1", "ceil_tenth", "7.50"},
+		{"high precision rate", "100.00", "0.138462", "0", "none", "13.85"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			upstream := decimal.RequireFromString(tt.upstream)
+			rate := decimal.RequireFromString(tt.rate)
+			markup := decimal.RequireFromString(tt.markup)
+			expected := decimal.RequireFromString(tt.expected)
+
+			result := CalculateLocalPrice(upstream, rate, markup, tt.rounding)
+			if !result.Equal(expected) {
+				t.Errorf("CalculateLocalPrice(%s, rate=%s, %s%%, %s) = %s, want %s",
+					tt.upstream, tt.rate, tt.markup, tt.rounding, result.String(), tt.expected)
+			}
+		})
+	}
+}

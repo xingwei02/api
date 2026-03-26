@@ -8,6 +8,17 @@ var (
 	roundScale = int32(2)
 )
 
+// CalculateLocalPrice 先按汇率转换，再应用加价和取整。
+// 计算链路：上游价格 × 汇率 → 加价 → 取整 → 本地售价。
+// exchangeRate 为 0 或负数时视为 1（同币种）。
+func CalculateLocalPrice(upstreamPrice, exchangeRate, markupPercent decimal.Decimal, roundingMode string) decimal.Decimal {
+	if exchangeRate.LessThanOrEqual(decimal.Zero) {
+		exchangeRate = decimal.NewFromInt(1)
+	}
+	converted := upstreamPrice.Mul(exchangeRate)
+	return CalculateMarkedUpPrice(converted, markupPercent, roundingMode)
+}
+
 // CalculateMarkedUpPrice 根据加价百分比计算本地售价。
 // markupPercent=100 表示上浮 100%，即 upstream × 2。
 // markupPercent=0 时直接返回原价（向后兼容）。

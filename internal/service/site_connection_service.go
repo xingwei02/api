@@ -46,6 +46,7 @@ type CreateConnectionInput struct {
 	CallbackURL        string  `json:"callback_url"`
 	RetryMax           int     `json:"retry_max"`
 	RetryIntervals     string  `json:"retry_intervals"`
+	ExchangeRate       float64 `json:"exchange_rate"`
 	PriceMarkupPercent float64 `json:"price_markup_percent"`
 	PriceRoundingMode  string  `json:"price_rounding_mode"`
 	AutoSyncPrice      bool    `json:"auto_sync_price"`
@@ -94,6 +95,7 @@ func (s *SiteConnectionService) Create(input CreateConnectionInput) (*models.Sit
 		Status:             constants.ConnectionStatusPending,
 		RetryMax:           retryMax,
 		RetryIntervals:     retryIntervals,
+		ExchangeRate:       s.normalizeExchangeRate(input.ExchangeRate),
 		PriceMarkupPercent: decimal.NewFromFloat(input.PriceMarkupPercent),
 		PriceRoundingMode:  roundingMode,
 		AutoSyncPrice:      input.AutoSyncPrice,
@@ -115,6 +117,7 @@ type UpdateConnectionInput struct {
 	CallbackURL        string   `json:"callback_url"`
 	RetryMax           int      `json:"retry_max"`
 	RetryIntervals     string   `json:"retry_intervals"`
+	ExchangeRate       *float64 `json:"exchange_rate"`
 	PriceMarkupPercent *float64 `json:"price_markup_percent"` // 指针类型，区分 0 和未传
 	PriceRoundingMode  *string  `json:"price_rounding_mode"`
 	AutoSyncPrice      *bool    `json:"auto_sync_price"`
@@ -157,6 +160,9 @@ func (s *SiteConnectionService) Update(id uint, input UpdateConnectionInput) (*m
 	}
 	if strings.TrimSpace(input.RetryIntervals) != "" {
 		conn.RetryIntervals = strings.TrimSpace(input.RetryIntervals)
+	}
+	if input.ExchangeRate != nil {
+		conn.ExchangeRate = s.normalizeExchangeRate(*input.ExchangeRate)
 	}
 	if input.PriceMarkupPercent != nil {
 		conn.PriceMarkupPercent = decimal.NewFromFloat(*input.PriceMarkupPercent)
@@ -279,4 +285,12 @@ func (s *SiteConnectionService) decryptSecret(conn *models.SiteConnection) (stri
 // DecryptSecret 解密加密后的 api_secret（公开方法，用于回调签名验证）
 func (s *SiteConnectionService) DecryptSecret(encrypted string) (string, error) {
 	return crypto.Decrypt(s.encryptKey, encrypted)
+}
+
+// normalizeExchangeRate 规范化汇率值，<=0 时返回 1
+func (s *SiteConnectionService) normalizeExchangeRate(rate float64) decimal.Decimal {
+	if rate <= 0 {
+		return decimal.NewFromInt(1)
+	}
+	return decimal.NewFromFloat(rate)
 }
