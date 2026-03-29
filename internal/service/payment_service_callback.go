@@ -306,7 +306,14 @@ func (s *PaymentService) applyWalletRechargePaymentUpdate(payment *models.Paymen
 	if status == constants.PaymentStatusSuccess && s.memberLevelSvc != nil {
 		if recharge, _ := s.walletRepo.GetRechargeOrderByPaymentID(payment.ID); recharge != nil &&
 			recharge.Status == constants.WalletRechargeStatusSuccess && recharge.UserID > 0 {
-			_ = s.memberLevelSvc.OnRechargeCompleted(recharge.UserID, recharge.Amount.Decimal)
+			if err := s.memberLevelSvc.OnRechargeCompleted(recharge.UserID, recharge.Amount.Decimal); err != nil {
+				paymentLogger().Warnw("member_level_recharge_completed_failed",
+					"payment_id", payment.ID,
+					"user_id", recharge.UserID,
+					"amount", recharge.Amount.Decimal.String(),
+					"error", err,
+				)
+			}
 		}
 	}
 
@@ -508,7 +515,14 @@ func (s *PaymentService) enqueueOrderPaidAsync(order *models.Order, payment *mod
 
 	// 订单支付成功后触发会员等级升级检查
 	if s.memberLevelSvc != nil && order.UserID > 0 {
-		_ = s.memberLevelSvc.OnOrderPaid(order.UserID, order.TotalAmount.Decimal)
+		if err := s.memberLevelSvc.OnOrderPaid(order.UserID, order.TotalAmount.Decimal); err != nil {
+			log.Warnw("member_level_order_paid_failed",
+				"order_id", order.ID,
+				"user_id", order.UserID,
+				"amount", order.TotalAmount.Decimal.String(),
+				"error", err,
+			)
+		}
 	}
 
 	if s.queueClient == nil {

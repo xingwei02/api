@@ -235,6 +235,16 @@ func (s *OrderService) UpdateOrderStatus(orderID uint, targetStatus string) (*mo
 					)
 				}
 			}
+			if s.memberLevelService != nil && order.UserID > 0 {
+				if err := s.memberLevelService.OnOrderPaid(order.UserID, order.TotalAmount.Decimal); err != nil {
+					logger.Warnw("member_level_order_paid_failed",
+						"order_id", order.ID,
+						"user_id", order.UserID,
+						"amount", order.TotalAmount.Decimal.String(),
+						"error", err,
+					)
+				}
+			}
 			return order, nil
 		case constants.OrderStatusCompleted:
 			if !canCompleteParentOrder(order) {
@@ -306,6 +316,16 @@ func (s *OrderService) UpdateOrderStatus(orderID uint, targetStatus string) (*mo
 		if err := s.affiliateSvc.HandleOrderPaid(order.ID); err != nil {
 			logger.Warnw("affiliate_handle_order_paid_failed",
 				"order_id", order.ID,
+				"error", err,
+			)
+		}
+	}
+	if target == constants.OrderStatusPaid && s.memberLevelService != nil && order.UserID > 0 {
+		if err := s.memberLevelService.OnOrderPaid(order.UserID, order.TotalAmount.Decimal); err != nil {
+			logger.Warnw("member_level_order_paid_failed",
+				"order_id", order.ID,
+				"user_id", order.UserID,
+				"amount", order.TotalAmount.Decimal.String(),
 				"error", err,
 			)
 		}
