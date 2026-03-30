@@ -219,11 +219,6 @@ func (s *UserAuthService) Register(email, password, code string, agreementAccept
 		return nil, "", time.Time{}, err
 	}
 
-	// 分配默认会员等级
-	if s.memberLevelSvc != nil {
-		_ = s.memberLevelSvc.AssignDefaultLevel(user.ID)
-	}
-
 	token, expiresAt, err := s.GenerateUserJWT(user, 0)
 	if err != nil {
 		return nil, "", time.Time{}, err
@@ -234,6 +229,11 @@ func (s *UserAuthService) Register(email, password, code string, agreementAccept
 		return nil, "", time.Time{}, err
 	}
 	_ = cache.SetUserAuthState(context.Background(), cache.BuildUserAuthState(user))
+
+	// 分配默认会员等级（必须在最后一次 Update 之后，避免被覆盖）
+	if s.memberLevelSvc != nil {
+		_ = s.memberLevelSvc.AssignDefaultLevel(user.ID)
+	}
 
 	return user, token, expiresAt, nil
 }
