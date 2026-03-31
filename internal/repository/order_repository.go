@@ -257,13 +257,15 @@ func (r *GormOrderRepository) ListAdmin(filter OrderListFilter) ([]models.Order,
 	}
 	if keyword := strings.TrimSpace(filter.ProductKeyword); keyword != "" {
 		like := "%" + keyword + "%"
-		cond, argCount := buildLocalizedLikeCondition(r.db, nil, []string{"order_items.product_title"})
-		if cond != "" {
-			args := repeatLikeArgs(like, argCount)
+		cond1, argCount1 := buildLocalizedLikeCondition(r.db, nil, []string{"oi.title_json"})
+		cond2, argCount2 := buildLocalizedLikeCondition(r.db, nil, []string{"oi2.title_json"})
+		if cond1 != "" {
+			args1 := repeatLikeArgs(like, argCount1)
+			args2 := repeatLikeArgs(like, argCount2)
 			query = query.Where(
-				"id IN (SELECT DISTINCT oi.order_id FROM order_items oi WHERE oi.order_id IN (SELECT o2.id FROM orders o2 WHERE o2.parent_id IS NULL) AND ("+cond+")) "+
-					"OR id IN (SELECT DISTINCT o3.parent_id FROM orders o3 WHERE o3.parent_id IS NOT NULL AND o3.id IN (SELECT DISTINCT oi2.order_id FROM order_items oi2 WHERE "+cond+"))",
-				append(args, args...)...,
+				"id IN (SELECT DISTINCT oi.order_id FROM order_items oi WHERE oi.order_id IN (SELECT o2.id FROM orders o2 WHERE o2.parent_id IS NULL) AND ("+cond1+")) "+
+					"OR id IN (SELECT DISTINCT o3.parent_id FROM orders o3 WHERE o3.parent_id IS NOT NULL AND o3.id IN (SELECT DISTINCT oi2.order_id FROM order_items oi2 WHERE "+cond2+"))",
+				append(args1, args2...)...,
 			)
 		}
 	}
