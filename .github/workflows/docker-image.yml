@@ -18,6 +18,9 @@ jobs:
         with:
           username: xingwei02
           password: ${{ secrets.DOCKER_TOKEN }}
+          # 加在登录步骤的上面，用来调试
+      - name: Debug Secrets
+        run: echo "DOCKER_TOKEN length: ${{ secrets.DOCKER_TOKEN | length }}"
       - name: Setup Buildx
         uses: docker/setup-buildx-action@v3
 
