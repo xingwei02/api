@@ -1,4 +1,4 @@
-name: Build & Push User Image
+name: Build & Push api Image
 on:
   push:
     branches: [ "main" ]
@@ -28,6 +28,6 @@ jobs:
           file: ./Dockerfile
           push: true
           tags: |
-            xingwei02/dujiao-next-user:latest
-            xingwei02/dujiao-next-user:affiliate-v1
-            xingwei02/dujiao-next-user:${{ github.sha }}
+            xingwei02/dujiao-next-api:latest
+            xingwei02/dujiao-next-api:affiliate-v1
+            xingwei02/dujiao-next-api:${{ github.sha }}
