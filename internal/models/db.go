@@ -147,6 +147,9 @@ func AutoMigrate() error {
 		&MemberLevel{},
 		&MemberLevelPrice{},
 		&Media{},
+		&PromotionPlan{},
+		&UserPromotionLevel{},
+		&CycleData{},
 	); err != nil {
 		return err
 	}
