@@ -1,98 +1,125 @@
 package service
 
 import (
-	"strings"
-	"time"
+	"errors"
 
-	"github.com/dujiao-next/internal/constants"
 	"github.com/dujiao-next/internal/models"
-	"github.com/dujiao-next/internal/repository"
-
-	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
 )
 
-// PromotionService 活动价服务
+// PromotionService 推广方案服务
 type PromotionService struct {
-	promotionRepo repository.PromotionRepository
+	db *gorm.DB
 }
 
-// NewPromotionService 创建活动价服务
-func NewPromotionService(promotionRepo repository.PromotionRepository) *PromotionService {
-	return &PromotionService{
-		promotionRepo: promotionRepo,
+// NewPromotionService 创建推广服务实例
+func NewPromotionService(db *gorm.DB) *PromotionService {
+	return &PromotionService{db: db}
+}
+
+// GetPromotionPlan 获取用户的推广方案
+func (s *PromotionService) GetPromotionPlan(userID uint) (*models.PromotionPlan, error) {
+	var plan models.PromotionPlan
+	if err := s.db.Where("user_id = ? AND status = ?", userID, "active").First(&plan).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
 	}
+	return &plan, nil
 }
 
-// GetProductPromotions 获取商品所有有效活动规则（用于前端展示）
-func (s *PromotionService) GetProductPromotions(productID uint) ([]models.Promotion, error) {
-	return s.promotionRepo.GetAllActiveByProduct(productID, time.Now())
-}
-
-// ApplyPromotion 应用活动价规则（支持阶梯匹配）
-func (s *PromotionService) ApplyPromotion(product *models.Product, quantity int) (*models.Promotion, models.Money, error) {
-	if product == nil || quantity <= 0 {
-		return nil, models.Money{}, ErrPromotionInvalid
+// CreateOrUpdatePromotionPlan 创建或更新推广方案
+func (s *PromotionService) CreateOrUpdatePromotionPlan(plan *models.PromotionPlan) error {
+	if plan.UserID == 0 {
+		return errors.New("user_id is required")
 	}
 
-	now := time.Now()
-	promotions, err := s.promotionRepo.GetAllActiveByProduct(product.ID, now)
+	var existing models.PromotionPlan
+	result := s.db.Where("user_id = ?", plan.UserID).First(&existing)
+
+	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		plan.Status = "active"
+		return s.db.Create(plan).Error
+	}
+
+	return s.db.Model(&existing).Updates(plan).Error
+}
+
+// InitializeUserLevel 初始化用户等级
+func (s *PromotionService) InitializeUserLevel(userID, parentUserID uint) error {
+	userLevel := models.UserPromotionLevel{
+		UserID:       userID,
+		ParentUserID: parentUserID,
+		CurrentLevel: 1,
+		CurrentRate:  0,
+	}
+	return s.db.Create(&userLevel).Error
+}
+
+// RecordCycleData 记录周期数据
+func (s *PromotionService) RecordCycleData(cycleData *models.CycleData) error {
+	return s.db.Create(cycleData).Error
+}
+
+// GetUserPromotionLevel 获取用户等级
+func (s *PromotionService) GetUserPromotionLevel(userID uint) (*models.UserPromotionLevel, error) {
+	var level models.UserPromotionLevel
+	if err := s.db.Where("user_id = ?", userID).First(&level).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &level, nil
+}
+
+// CheckUpgrade 检查升级条件
+func (s *PromotionService) CheckUpgrade(userID uint) (bool, error) {
+	userLevel, err := s.GetUserPromotionLevel(userID)
+	if err != nil || userLevel == nil {
+		return false, err
+	}
+
+	if userLevel.CurrentLevel >= 3 {
+		return false, nil
+	}
+
+	return true, nil
+}
+
+// UpdateUserLevel 更新用户等级
+func (s *PromotionService) UpdateUserLevel(userID uint, newLevel int, newRate float64) error {
+	return s.db.Model(&models.UserPromotionLevel{}).
+		Where("user_id = ?", userID).
+		Updates(map[string]interface{}{
+			"current_level": newLevel,
+			"current_rate":  newRate,
+		}).Error
+}
+
+// CalculateCommission 计算返利
+func (s *PromotionService) CalculateCommission(orderAmount float64, userRate float64) float64 {
+	return orderAmount * userRate / 100
+}
+
+// GetUserProgress 获取用户进度
+func (s *PromotionService) GetUserProgress(userID uint) (map[string]interface{}, error) {
+	userLevel, err := s.GetUserPromotionLevel(userID)
 	if err != nil {
-		return nil, models.Money{}, err
-	}
-	if len(promotions) == 0 {
-		return nil, product.PriceAmount, nil
+		return nil, err
 	}
 
-	subtotal := product.PriceAmount.Decimal.Mul(decimal.NewFromInt(int64(quantity)))
-
-	// 从高到低遍历 MinAmount，取第一个满足 MinAmount <= subtotal 的规则
-	var matched *models.Promotion
-	for i := len(promotions) - 1; i >= 0; i-- {
-		p := &promotions[i]
-		if strings.ToLower(strings.TrimSpace(p.ScopeType)) != constants.ScopeTypeProduct {
-			continue
-		}
-		if p.MinAmount.Decimal.LessThanOrEqual(decimal.Zero) || subtotal.Cmp(p.MinAmount.Decimal) >= 0 {
-			matched = p
-			break
-		}
+	if userLevel == nil {
+		return map[string]interface{}{
+			"current_level": 0,
+			"current_rate":  0,
+		}, nil
 	}
 
-	if matched == nil {
-		return nil, product.PriceAmount, nil
-	}
-
-	unitPrice, err := s.calculateUnitPrice(product.PriceAmount, matched)
-	if err != nil {
-		return nil, models.Money{}, err
-	}
-
-	return matched, unitPrice, nil
-}
-
-func (s *PromotionService) calculateUnitPrice(base models.Money, promotion *models.Promotion) (models.Money, error) {
-	value := promotion.Value.Decimal
-	if value.LessThanOrEqual(decimal.Zero) {
-		return models.Money{}, ErrPromotionInvalid
-	}
-
-	switch strings.ToLower(strings.TrimSpace(promotion.Type)) {
-	case constants.PromotionTypeFixed:
-		discounted := base.Decimal.Sub(value)
-		if discounted.LessThan(decimal.Zero) {
-			discounted = decimal.Zero
-		}
-		return models.NewMoneyFromDecimal(discounted), nil
-	case constants.PromotionTypePercent:
-		percent := decimal.NewFromInt(100).Sub(value)
-		if percent.LessThan(decimal.Zero) {
-			percent = decimal.Zero
-		}
-		discounted := base.Decimal.Mul(percent).Div(decimal.NewFromInt(100))
-		return models.NewMoneyFromDecimal(discounted), nil
-	case constants.PromotionTypeSpecialPrice:
-		return models.NewMoneyFromDecimal(value), nil
-	default:
-		return models.Money{}, ErrPromotionInvalid
-	}
+	return map[string]interface{}{
+		"current_level": userLevel.CurrentLevel,
+		"current_rate":  userLevel.CurrentRate,
+		"progress":      userLevel.UpgradeProgress,
+	}, nil
 }
