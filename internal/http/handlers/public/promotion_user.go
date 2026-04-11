@@ -16,7 +16,7 @@ func (h *Handler) GetUserPromotionProgress(c *gin.Context) {
 		return
 	}
 
-	promotionSvc := service.NewPromotionService(models.DB)
+	promotionSvc := service.NewPromotionPlanService(models.DB)
 	progress, err := promotionSvc.GetUserProgress(userID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -33,7 +33,7 @@ func (h *Handler) GetUserPromotionLevel(c *gin.Context) {
 		return
 	}
 
-	promotionSvc := service.NewPromotionService(models.DB)
+	promotionSvc := service.NewPromotionPlanService(models.DB)
 	level, err := promotionSvc.GetUserPromotionLevel(userID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

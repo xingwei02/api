@@ -41,7 +41,7 @@ func (h *Handler) CreateOrUpdatePromotionPlan(c *gin.Context) {
 		return
 	}
 
-	promotionSvc := service.NewPromotionService(models.DB)
+	promotionSvc := service.NewPromotionPlanService(models.DB)
 
 	plan := &models.PromotionPlan{
 		UserID:          adminID,
@@ -77,7 +77,7 @@ func (h *Handler) GetPromotionPlan(c *gin.Context) {
 		return
 	}
 
-	promotionSvc := service.NewPromotionService(models.DB)
+	promotionSvc := service.NewPromotionPlanService(models.DB)
 	plan, err := promotionSvc.GetPromotionPlan(adminID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
