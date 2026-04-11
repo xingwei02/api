@@ -63,7 +63,6 @@ func (s *CartService) ListByUser(userID uint) ([]CartItemDetail, error) {
 	}
 	currency := resolveServiceSiteCurrency(s.settingService)
 	details := make([]CartItemDetail, 0, len(items))
-	promotionService := NewPromotionService(s.promotionRepo)
 	for _, item := range items {
 		product := item.Product
 		if product == nil || product.ID == 0 {
