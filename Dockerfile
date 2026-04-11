@@ -10,7 +10,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN mkdir -p /out && go build -trimpath -tags release -o /out/dujiao-api ./cmd/server
+RUN go build -trimpath -tags release -o dujiao-next ./cmd/server
 
 FROM alpine:latest
 
@@ -19,9 +19,9 @@ WORKDIR /app
 RUN apk --no-cache add ca-certificates tzdata \
     && mkdir -p /app/db /app/uploads /app/logs
 
-COPY --from=builder /out/dujiao-api /app/dujiao-api
+COPY --from=builder /src/dujiao-next /app/dujiao-next
 COPY config.yml.example /app/config.yml.example
 
 EXPOSE 8080
 
-CMD ["./dujiao-api"]
+CMD ["./dujiao-next"]
