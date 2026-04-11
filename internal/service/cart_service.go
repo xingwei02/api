@@ -102,14 +102,6 @@ func (s *CartService) ListByUser(userID uint) ([]CartItemDetail, error) {
 		priceCarrier := *product
 		priceCarrier.PriceAmount = sku.PriceAmount
 		unitPrice := sku.PriceAmount
-		if promotionService != nil {
-			_, discounted, err := promotionService.ApplyPromotion(&priceCarrier, item.Quantity)
-			if err != nil {
-				return nil, err
-			}
-			unitPrice = discounted
-		}
-
 		fulfillmentType := strings.TrimSpace(product.FulfillmentType)
 		if fulfillmentType == "" {
 			fulfillmentType = constants.FulfillmentTypeManual
