@@ -92,12 +92,6 @@ func (s *OrderService) buildOrderResult(input orderCreateParams) (*orderBuildRes
 
 		// 1. 计算活动价
 		priceCarrier := *product
-		priceCarrier.PriceAmount = sku.PriceAmount
-		promotion, promoUnitPrice, err := promotionService.ApplyPromotion(&priceCarrier, item.Quantity)
-		if err != nil {
-			return nil, err
-		}
-		promoUnitPriceAmount := promoUnitPrice.Decimal.Round(2)
 
 		// 2. 计算会员价
 		memberUnitPrice := basePrice
