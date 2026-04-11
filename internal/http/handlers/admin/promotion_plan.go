@@ -3,7 +3,6 @@ package admin
 import (
 	"net/http"
 
-	"github.com/dujiao-next/internal/constants"
 	"github.com/dujiao-next/internal/http/handlers/shared"
 	"github.com/dujiao-next/internal/models"
 	"github.com/dujiao-next/internal/service"
