@@ -2,12 +2,6 @@
 
 FROM golang:1.25.3-alpine AS builder
 
-ARG TARGETOS
-ARG TARGETARCH
-ARG TARGETVARIANT
-ARG APP_VERSION=v1.0.0
-RUN echo "Building for $TARGETOS/$TARGETARCH$TARGETVARIANT"
-
 WORKDIR /src
 
 ENV CGO_ENABLED=0
@@ -16,10 +10,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN set -eux; \
-    go build -trimpath -tags release \
-    -ldflags="-s -w -X github.com/dujiao-next/internal/version.Version=${APP_VERSION}" \
-    -o /out/dujiao-api ./cmd/server
+RUN go build -trimpath -tags release -o /out/dujiao-api ./cmd/server
 
 FROM alpine:latest
 
