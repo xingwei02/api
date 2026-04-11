@@ -10,7 +10,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN go build -trimpath -tags release -o /out/dujiao-api ./cmd/server
+RUN mkdir -p /out && go build -trimpath -tags release -o /out/dujiao-api ./cmd/server
 
 FROM alpine:latest
 
