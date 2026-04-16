@@ -1,6 +1,7 @@
 package router
 
 import (
+	"net/url"
 	"go.uber.org/zap"
 	"net/http"
 	"strconv"
@@ -91,8 +92,53 @@ func resolveAllowedOrigin(origin string, allowedOrigins []string, allowCredentia
 		if strings.EqualFold(allowed, origin) {
 			return origin
 		}
+		if matchAllowedOriginPattern(allowed, origin) {
+			return origin
+		}
 	}
 	return ""
+}
+
+func matchAllowedOriginPattern(allowed, origin string) bool {
+	allowed = strings.TrimSpace(allowed)
+	origin = strings.TrimSpace(origin)
+	if allowed == "" || origin == "" {
+		return false
+	}
+
+	allowedURL, err := url.Parse(allowed)
+	if err != nil || allowedURL.Scheme == "" || allowedURL.Host == "" {
+		return false
+	}
+	originURL, err := url.Parse(origin)
+	if err != nil || originURL.Scheme == "" || originURL.Host == "" {
+		return false
+	}
+
+	if !strings.EqualFold(allowedURL.Scheme, originURL.Scheme) {
+		return false
+	}
+
+	allowedHost := strings.ToLower(allowedURL.Hostname())
+	originHost := strings.ToLower(originURL.Hostname())
+	allowedPort := allowedURL.Port()
+	originPort := originURL.Port()
+
+	portMatched := allowedPort == "" || allowedPort == "*" || allowedPort == originPort
+	if !portMatched {
+		return false
+	}
+
+	if strings.HasPrefix(allowedHost, "*.") {
+		suffix := strings.TrimPrefix(allowedHost, "*.")
+		return originHost != suffix && strings.HasSuffix(originHost, "."+suffix)
+	}
+
+	if strings.EqualFold(allowedHost, originHost) {
+		return true
+	}
+
+	return false
 }
 
 // RequestIDMiddleware 请求 ID 中间件
