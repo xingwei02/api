@@ -11,19 +11,18 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// PromotionService 活动价服务
+// 备份说明：该文件为 2026-04-18 promotion 服务空值兜底修复后的备份。
+
 type PromotionService struct {
 	promotionRepo repository.PromotionRepository
 }
 
-// NewPromotionService 创建活动价服务
 func NewPromotionService(promotionRepo repository.PromotionRepository) *PromotionService {
 	return &PromotionService{
 		promotionRepo: promotionRepo,
 	}
 }
 
-// GetProductPromotions 获取商品所有有效活动规则（用于前端展示）
 func (s *PromotionService) GetProductPromotions(productID uint) ([]models.Promotion, error) {
 	if s == nil || s.promotionRepo == nil || productID == 0 {
 		return []models.Promotion{}, nil
@@ -31,7 +30,6 @@ func (s *PromotionService) GetProductPromotions(productID uint) ([]models.Promot
 	return s.promotionRepo.GetAllActiveByProduct(productID, time.Now())
 }
 
-// ApplyPromotion 应用活动价规则（支持阶梯匹配）
 func (s *PromotionService) ApplyPromotion(product *models.Product, quantity int) (*models.Promotion, models.Money, error) {
 	if product == nil || quantity <= 0 {
 		return nil, models.Money{}, ErrPromotionInvalid
@@ -51,7 +49,6 @@ func (s *PromotionService) ApplyPromotion(product *models.Product, quantity int)
 
 	subtotal := product.PriceAmount.Decimal.Mul(decimal.NewFromInt(int64(quantity)))
 
-	// 从高到低遍历 MinAmount，取第一个满足 MinAmount <= subtotal 的规则
 	var matched *models.Promotion
 	for i := len(promotions) - 1; i >= 0; i-- {
 		p := &promotions[i]
@@ -74,31 +71,4 @@ func (s *PromotionService) ApplyPromotion(product *models.Product, quantity int)
 	}
 
 	return matched, unitPrice, nil
-}
-
-func (s *PromotionService) calculateUnitPrice(base models.Money, promotion *models.Promotion) (models.Money, error) {
-	value := promotion.Value.Decimal
-	if value.LessThanOrEqual(decimal.Zero) {
-		return models.Money{}, ErrPromotionInvalid
-	}
-
-	switch strings.ToLower(strings.TrimSpace(promotion.Type)) {
-	case constants.PromotionTypeFixed:
-		discounted := base.Decimal.Sub(value)
-		if discounted.LessThan(decimal.Zero) {
-			discounted = decimal.Zero
-		}
-		return models.NewMoneyFromDecimal(discounted), nil
-	case constants.PromotionTypePercent:
-		percent := decimal.NewFromInt(100).Sub(value)
-		if percent.LessThan(decimal.Zero) {
-			percent = decimal.Zero
-		}
-		discounted := base.Decimal.Mul(percent).Div(decimal.NewFromInt(100))
-		return models.NewMoneyFromDecimal(discounted), nil
-	case constants.PromotionTypeSpecialPrice:
-		return models.NewMoneyFromDecimal(value), nil
-	default:
-		return models.Money{}, ErrPromotionInvalid
-	}
 }

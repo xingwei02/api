@@ -1,0 +1,79 @@
+package service
+
+import (
+	"errors"
+	"strings"
+	"time"
+
+	"github.com/dujiao-next/internal/config"
+	"github.com/dujiao-next/internal/constants"
+	"github.com/dujiao-next/internal/logger"
+	"github.com/dujiao-next/internal/models"
+	"github.com/dujiao-next/internal/queue"
+	"github.com/dujiao-next/internal/repository"
+
+	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+)
+
+// 备份说明：该文件为 2026-04-18 promotion 服务空值兜底修复时的订单服务关键片段备份。
+
+type OrderService struct {
+	orderRepo          repository.OrderRepository
+	userRepo           repository.UserRepository
+	productRepo        repository.ProductRepository
+	productSKURepo     repository.ProductSKURepository
+	cardSecretRepo     repository.CardSecretRepository
+	couponRepo         repository.CouponRepository
+	couponUsageRepo    repository.CouponUsageRepository
+	promotionRepo      repository.PromotionRepository
+	queueClient        *queue.Client
+	settingService     *SettingService
+	defaultEmailConfig config.EmailConfig
+	walletService      *WalletService
+	affiliateSvc       *AffiliateService
+	memberLevelService *MemberLevelService
+	riskControlSvc     *OrderRiskControlService
+	expireMinutes      int
+}
+
+type OrderServiceOptions struct {
+	OrderRepo          repository.OrderRepository
+	UserRepo           repository.UserRepository
+	ProductRepo        repository.ProductRepository
+	ProductSKURepo     repository.ProductSKURepository
+	CardSecretRepo     repository.CardSecretRepository
+	CouponRepo         repository.CouponRepository
+	CouponUsageRepo    repository.CouponUsageRepository
+	PromotionRepo      repository.PromotionRepository
+	QueueClient        *queue.Client
+	SettingService     *SettingService
+	DefaultEmailConfig config.EmailConfig
+	WalletService      *WalletService
+	AffiliateService   *AffiliateService
+	MemberLevelService *MemberLevelService
+	RiskControlService *OrderRiskControlService
+	ExpireMinutes      int
+}
+
+func NewOrderService(opts OrderServiceOptions) *OrderService {
+	return &OrderService{
+		orderRepo:          opts.OrderRepo,
+		userRepo:           opts.UserRepo,
+		productRepo:        opts.ProductRepo,
+		productSKURepo:     opts.ProductSKURepo,
+		cardSecretRepo:     opts.CardSecretRepo,
+		couponRepo:         opts.CouponRepo,
+		couponUsageRepo:    opts.CouponUsageRepo,
+		promotionRepo:      opts.PromotionRepo,
+		queueClient:        opts.QueueClient,
+		settingService:     opts.SettingService,
+		defaultEmailConfig: opts.DefaultEmailConfig,
+		walletService:      opts.WalletService,
+		affiliateSvc:       opts.AffiliateService,
+		memberLevelService: opts.MemberLevelService,
+		riskControlSvc:     opts.RiskControlService,
+		expireMinutes:      opts.ExpireMinutes,
+	}
+}

@@ -1,0 +1,40 @@
+package service
+
+import (
+	"testing"
+
+	"github.com/dujiao-next/internal/models"
+	"github.com/shopspring/decimal"
+)
+
+// 备份说明：该文件为 2026-04-18 promotion 服务空值兜底修复新增测试备份。
+
+func TestPromotionServiceApplyPromotionGracefullyFallsBackWhenRepoNil(t *testing.T) {
+	product := &models.Product{
+		ID:          1,
+		PriceAmount: models.NewMoneyFromDecimal(decimal.NewFromInt(99)),
+	}
+
+	svc := NewPromotionService(nil)
+	promotion, price, err := svc.ApplyPromotion(product, 1)
+	if err != nil {
+		t.Fatalf("expected no error when promotion repo is nil, got %v", err)
+	}
+	if promotion != nil {
+		t.Fatalf("expected nil promotion when repo is nil")
+	}
+	if !price.Equal(product.PriceAmount.Decimal) {
+		t.Fatalf("expected fallback price %s, got %s", product.PriceAmount.Decimal.String(), price.Decimal.String())
+	}
+}
+
+func TestPromotionServiceGetProductPromotionsReturnsEmptyWhenRepoNil(t *testing.T) {
+	svc := NewPromotionService(nil)
+	items, err := svc.GetProductPromotions(1)
+	if err != nil {
+		t.Fatalf("expected no error when promotion repo is nil, got %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("expected empty promotions when repo is nil, got %d", len(items))
+	}
+}

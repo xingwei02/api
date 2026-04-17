@@ -67,6 +67,7 @@ func NewOrderService(opts OrderServiceOptions) *OrderService {
 		cardSecretRepo:     opts.CardSecretRepo,
 		couponRepo:         opts.CouponRepo,
 		couponUsageRepo:    opts.CouponUsageRepo,
+		promotionRepo:      opts.PromotionRepo,
 		queueClient:        opts.QueueClient,
 		settingService:     opts.SettingService,
 		defaultEmailConfig: opts.DefaultEmailConfig,
