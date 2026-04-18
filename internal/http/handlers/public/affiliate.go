@@ -2,6 +2,7 @@ package public
 
 import (
 	"errors"
+	"net/http"
 	"strconv"
 	"strings"
 
@@ -11,8 +12,13 @@ import (
 	"github.com/dujiao-next/internal/dto"
 	"github.com/dujiao-next/internal/http/handlers/shared"
 	"github.com/dujiao-next/internal/http/response"
+	"github.com/dujiao-next/internal/models"
 	"github.com/dujiao-next/internal/service"
 )
+
+type OpenAffiliateRequest struct {
+	InviterCode string `json:"inviter_code"`
+}
 
 // AffiliateTrackClickRequest 推广点击记录请求
 type AffiliateTrackClickRequest struct {
@@ -57,7 +63,15 @@ func (h *Handler) OpenAffiliate(c *gin.Context) {
 		return
 	}
 
-	profile, err := h.AffiliateService.OpenAffiliate(uid)
+	var req OpenAffiliateRequest
+	if c.Request.ContentLength > 0 {
+		if err := c.ShouldBindJSON(&req); err != nil {
+			shared.RespondBindError(c, err)
+			return
+		}
+	}
+
+	profile, err := h.AffiliateService.OpenTokenMerchant(uid, req.InviterCode)
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrAffiliateDisabled):
@@ -88,6 +102,50 @@ func (h *Handler) GetAffiliateDashboard(c *gin.Context) {
 		return
 	}
 	response.Success(c, data)
+}
+
+// GetAffiliatePublicContext 获取推广渠道公共上下文
+func (h *Handler) GetAffiliatePublicContext(c *gin.Context) {
+	code := strings.ToUpper(strings.TrimSpace(c.Query("code")))
+	if code == "" {
+		response.Error(c, http.StatusBadRequest, "affiliate code is required")
+		return
+	}
+	if h == nil || h.AffiliateService == nil {
+		shared.RespondError(c, response.CodeInternal, "error.internal_error", nil)
+		return
+	}
+	profile, err := h.AffiliateService.GetPublicAffiliateProfileByCode(code)
+	if err != nil {
+		shared.RespondError(c, response.CodeInternal, "error.internal_error", err)
+		return
+	}
+	if profile == nil {
+		shared.RespondError(c, response.CodeNotFound, "error.user_not_found", nil)
+		return
+	}
+
+	var discount models.AffiliateDiscount
+	if err := models.DB.Where("user_id = ?", profile.UserID).First(&discount).Error; err != nil {
+		discount = models.AffiliateDiscount{UserID: profile.UserID}
+	}
+
+	var contact models.AffiliateContact
+	if err := models.DB.Where("user_id = ?", profile.UserID).First(&contact).Error; err != nil {
+		contact = models.AffiliateContact{UserID: profile.UserID}
+	}
+
+	response.Success(c, gin.H{
+		"affiliate_code":         profile.AffiliateCode,
+		"profile_id":             profile.ID,
+		"user_id":                profile.UserID,
+		"merchant_page_enabled":  discount.MerchantPageEnabled,
+		"group_section_enabled":  discount.GroupSectionEnabled,
+		"discount_rate":          discount.DiscountRate,
+		"group_image_url":        contact.GroupImageURL,
+		"parent_group_image_url": contact.ParentGroupImageURL,
+		"notice":                 contact.Notice,
+	})
 }
 
 // ListAffiliateCommissions 查询我的推广佣金记录

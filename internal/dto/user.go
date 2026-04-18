@@ -12,6 +12,8 @@ type UserProfileResp struct {
 	Email              string       `json:"email"`
 	Nickname           string       `json:"nickname"`
 	EmailVerifiedAt    *time.Time   `json:"email_verified_at"`
+	IsTokenMerchant    bool         `json:"is_token_merchant"`
+	TokenMerchantAt    *time.Time   `json:"token_merchant_at,omitempty"`
 	Locale             string       `json:"locale"`
 	MemberLevelID      uint         `json:"member_level_id"`
 	TotalRecharged     models.Money `json:"total_recharged"`
@@ -30,6 +32,8 @@ func NewUserProfileResp(user *models.User, emailMode, passwordMode string) UserP
 		Email:              user.Email,
 		Nickname:           user.DisplayName,
 		EmailVerifiedAt:    user.EmailVerifiedAt,
+		IsTokenMerchant:    user.IsTokenMerchant,
+		TokenMerchantAt:    user.TokenMerchantAt,
 		Locale:             user.Locale,
 		MemberLevelID:      user.MemberLevelID,
 		TotalRecharged:     user.TotalRecharged,
@@ -73,6 +77,8 @@ type UserAuthBriefResp struct {
 	Email           string     `json:"email"`
 	Nickname        string     `json:"nickname"`
 	EmailVerifiedAt *time.Time `json:"email_verified_at"`
+	IsTokenMerchant bool       `json:"is_token_merchant"`
+	TokenMerchantAt *time.Time `json:"token_merchant_at,omitempty"`
 }
 
 // NewUserAuthBriefResp 从 models.User 构造登录/注册精简响应
@@ -82,5 +88,7 @@ func NewUserAuthBriefResp(user *models.User) UserAuthBriefResp {
 		Email:           user.Email,
 		Nickname:        user.DisplayName,
 		EmailVerifiedAt: user.EmailVerifiedAt,
+		IsTokenMerchant: user.IsTokenMerchant,
+		TokenMerchantAt: user.TokenMerchantAt,
 	}
 }

@@ -20,6 +20,27 @@ func NewZhengyeService(db *gorm.DB) *ZhengyeService {
 	return &ZhengyeService{db: db}
 }
 
+// EnsureTokenMerchant 校验当前用户是否已开通 Token 商身份。
+func (s *ZhengyeService) EnsureTokenMerchant(userID uint) error {
+	if s == nil || s.db == nil || userID == 0 {
+		return ErrTokenMerchantRequired
+	}
+	var user models.User
+	if err := s.db.Select("id", "status", "is_token_merchant").First(&user, userID).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return ErrNotFound
+		}
+		return err
+	}
+	if user.Status == "disabled" {
+		return ErrUserDisabled
+	}
+	if !user.IsTokenMerchant {
+		return ErrTokenMerchantRequired
+	}
+	return nil
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // DTO 定义
 // ─────────────────────────────────────────────────────────────────────────────

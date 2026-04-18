@@ -17,6 +17,7 @@ const authStateCacheTTL = 10 * time.Minute
 type UserAuthState struct {
 	UserID             uint   `json:"user_id"`
 	Status             string `json:"status"`
+	IsTokenMerchant    bool   `json:"is_token_merchant"`
 	TokenVersion       uint64 `json:"token_version"`
 	TokenInvalidBefore int64  `json:"token_invalid_before"`
 	UpdatedAt          int64  `json:"updated_at"`
@@ -46,10 +47,11 @@ func BuildUserAuthState(user *models.User) *UserAuthState {
 		return nil
 	}
 	state := &UserAuthState{
-		UserID:       user.ID,
-		Status:       user.Status,
-		TokenVersion: user.TokenVersion,
-		UpdatedAt:    time.Now().Unix(),
+		UserID:          user.ID,
+		Status:          user.Status,
+		IsTokenMerchant: user.IsTokenMerchant,
+		TokenVersion:    user.TokenVersion,
+		UpdatedAt:       time.Now().Unix(),
 	}
 	if user.TokenInvalidBefore != nil {
 		state.TokenInvalidBefore = user.TokenInvalidBefore.Unix()

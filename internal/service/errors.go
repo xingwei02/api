@@ -143,6 +143,7 @@ var (
 	ErrAffiliateConfigInvalid              = errors.New("affiliate config invalid")
 	ErrAffiliateDisabled                   = errors.New("affiliate disabled")
 	ErrAffiliateNotOpened                  = errors.New("affiliate not opened")
+	ErrTokenMerchantRequired               = errors.New("token merchant required")
 	ErrAffiliateCodeInvalid                = errors.New("affiliate code invalid")
 	ErrAffiliateProfileStatusInvalid       = errors.New("affiliate profile status invalid")
 	ErrAffiliateWithdrawAmountInvalid      = errors.New("affiliate withdraw amount invalid")

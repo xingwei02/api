@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"crypto/rand"
 	"math"
 	"math/big"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dujiao-next/internal/cache"
 	"github.com/dujiao-next/internal/constants"
 	"github.com/dujiao-next/internal/models"
 	"github.com/dujiao-next/internal/repository"
@@ -217,6 +219,134 @@ func (s *AffiliateService) OpenAffiliate(userID uint) (*models.AffiliateProfile,
 		return profile, nil
 	}
 	return nil, ErrAffiliateCodeInvalid
+}
+
+// OpenTokenMerchant 开通 Token 商身份，并尽量挂接邀请关系与默认方案。
+func (s *AffiliateService) OpenTokenMerchant(userID uint, inviterCode string) (*models.AffiliateProfile, error) {
+	profile, err := s.OpenAffiliate(userID)
+	if err != nil {
+		return nil, err
+	}
+	if s.userRepo == nil {
+		return profile, nil
+	}
+	user, err := s.userRepo.GetByID(userID)
+	if err != nil {
+		return nil, err
+	}
+	if user == nil {
+		return nil, ErrNotFound
+	}
+	now := time.Now()
+	if !user.IsTokenMerchant {
+		user.IsTokenMerchant = true
+		user.TokenMerchantAt = &now
+		if err := s.userRepo.Update(user); err != nil {
+			return nil, err
+		}
+		_ = cache.SetUserAuthState(context.Background(), cache.BuildUserAuthState(user))
+	}
+	if err := s.ensureTokenMerchantScheme(userID); err != nil {
+		return nil, err
+	}
+	if err := s.bindTokenMerchantInviter(userID, inviterCode); err != nil {
+		return nil, err
+	}
+	return profile, nil
+}
+
+// GetPublicAffiliateProfileByCode 按联盟ID获取公开可用的推广档案
+func (s *AffiliateService) GetPublicAffiliateProfileByCode(code string) (*models.AffiliateProfile, error) {
+	if s == nil || s.repo == nil {
+		return nil, ErrNotFound
+	}
+	profile, err := s.repo.GetProfileByCode(code)
+	if err != nil {
+		return nil, err
+	}
+	if profile == nil {
+		return nil, nil
+	}
+	if strings.TrimSpace(profile.Status) != constants.AffiliateProfileStatusActive {
+		return nil, nil
+	}
+	return profile, nil
+}
+
+func (s *AffiliateService) ensureTokenMerchantScheme(userID uint) error {
+	if userID == 0 || models.DB == nil {
+		return nil
+	}
+	var scheme models.AffiliateLevelScheme
+	err := models.DB.Where("user_id = ?", userID).First(&scheme).Error
+	if err == nil {
+		return nil
+	}
+	if err != nil && err != gorm.ErrRecordNotFound {
+		return err
+	}
+	scheme = models.AffiliateLevelScheme{
+		UserID:    userID,
+		MyRate:    0,
+		EntryRate: 0,
+		Version:   1,
+	}
+	return models.DB.Create(&scheme).Error
+}
+
+func (s *AffiliateService) bindTokenMerchantInviter(userID uint, inviterCode string) error {
+	code := normalizeAffiliateCode(inviterCode)
+	if userID == 0 || code == "" || s.repo == nil || models.DB == nil {
+		return nil
+	}
+	inviterProfile, err := s.repo.GetProfileByCode(code)
+	if err != nil {
+		return err
+	}
+	if inviterProfile == nil || inviterProfile.UserID == 0 || inviterProfile.UserID == userID {
+		return nil
+	}
+
+	var existing models.UserPromotionLevel
+	err = models.DB.Where("user_id = ?", userID).First(&existing).Error
+	if err == nil {
+		return nil
+	}
+	if err != nil && err != gorm.ErrRecordNotFound {
+		return err
+	}
+
+	entryRate := 0.0
+	entryItemID := uint(0)
+	var inviterScheme models.AffiliateLevelScheme
+	if err := models.DB.Preload("Items", func(db *gorm.DB) *gorm.DB {
+		return db.Order("sort_order asc, id asc")
+	}).Where("user_id = ?", inviterProfile.UserID).First(&inviterScheme).Error; err == nil {
+		entryRate = inviterScheme.EntryRate
+		for _, item := range inviterScheme.Items {
+			if item.IsEntry {
+				entryItemID = item.ID
+				if item.Rate > 0 {
+					entryRate = item.Rate
+				}
+				break
+			}
+		}
+	}
+
+	now := time.Now()
+	level := models.UserPromotionLevel{
+		UserID:       userID,
+		ParentUserID: inviterProfile.UserID,
+		LevelItemID:  entryItemID,
+		MaxRate:      entryRate,
+		CustomRate:   -1,
+		CurrentLevel: 1,
+		CurrentRate:  entryRate,
+		CycleStart:   now,
+		CycleEnd:     now.AddDate(0, 1, 0),
+	}
+	return models.DB.Create(&level).Error
 }
 
 // ResolveOrderAffiliateSnapshot 解析下单归因快照（最近30天最后一次有效点击优先）

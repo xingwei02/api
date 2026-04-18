@@ -86,6 +86,7 @@ func SetupRouter(cfg *config.Config, c *provider.Container) *gin.Engine {
 			public.GET("/categories", publicHandler.GetCategories)
 			public.GET("/captcha/image", publicHandler.GetImageCaptcha)
 			public.POST("/affiliate/click", publicHandler.TrackAffiliateClick)
+			public.GET("/affiliate/context", publicHandler.GetAffiliatePublicContext)
 			public.GET("/member-levels", publicHandler.GetPublicMemberLevels)
 		}
 
@@ -321,6 +322,10 @@ func SetupRouter(cfg *config.Config, c *provider.Container) *gin.Engine {
 				authorized.GET("/affiliates/users", adminHandler.ListAffiliateUsers)
 				authorized.PATCH("/affiliates/users/:id/status", adminHandler.UpdateAffiliateUserStatus)
 				authorized.PATCH("/affiliates/users/batch-status", adminHandler.BatchUpdateAffiliateUserStatus)
+				authorized.GET("/affiliates/users/:id/discount", adminHandler.GetAffiliateUserDiscount)
+				authorized.PUT("/affiliates/users/:id/discount", adminHandler.UpdateAffiliateUserDiscount)
+				authorized.GET("/affiliates/users/:id/contact", adminHandler.GetAffiliateUserContact)
+				authorized.PUT("/affiliates/users/:id/contact", adminHandler.UpdateAffiliateUserContact)
 				authorized.GET("/affiliates/commissions", adminHandler.ListAffiliateCommissions)
 				authorized.GET("/affiliates/withdraws", adminHandler.ListAffiliateWithdraws)
 				authorized.POST("/affiliates/withdraws/:id/reject", adminHandler.RejectAffiliateWithdraw)

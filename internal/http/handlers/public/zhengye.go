@@ -1,6 +1,7 @@
 package public
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -21,6 +22,27 @@ func queryIntDefault(c *gin.Context, key string, def int) int {
 	return v
 }
 
+func (h *Handler) ensureZhengyeAccess(c *gin.Context, userID uint) bool {
+	if h == nil || h.ZhengyeService == nil {
+		shared.RespondError(c, response.CodeInternal, "error.internal_error", nil)
+		return false
+	}
+	if err := h.ZhengyeService.EnsureTokenMerchant(userID); err != nil {
+		switch {
+		case errors.Is(err, service.ErrTokenMerchantRequired):
+			shared.RespondError(c, response.CodeForbidden, "error.forbidden", nil)
+		case errors.Is(err, service.ErrUserDisabled):
+			shared.RespondError(c, response.CodeUnauthorized, "error.user_disabled", nil)
+		case errors.Is(err, service.ErrNotFound):
+			shared.RespondError(c, response.CodeNotFound, "error.user_not_found", nil)
+		default:
+			shared.RespondError(c, response.CodeInternal, "error.internal_error", err)
+		}
+		return false
+	}
+	return true
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Dashboard & Stats
 // ─────────────────────────────────────────────────────────────────────────────
@@ -31,8 +53,7 @@ func (h *Handler) GetZhengyeDashboard(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if h.ZhengyeService == nil {
-		shared.RespondError(c, response.CodeInternal, "error.internal_error", nil)
+	if !h.ensureZhengyeAccess(c, uid) {
 		return
 	}
 	data, err := h.ZhengyeService.GetDashboard(uid)
@@ -49,8 +70,7 @@ func (h *Handler) GetZhengyeStats(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if h.ZhengyeService == nil {
-		shared.RespondError(c, response.CodeInternal, "error.internal_error", nil)
+	if !h.ensureZhengyeAccess(c, uid) {
 		return
 	}
 	period := service.ZhengyeStatsPeriod(c.DefaultQuery("period", "7d"))
@@ -82,8 +102,7 @@ func (h *Handler) GetZhengyeLevels(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if h.ZhengyeService == nil {
-		shared.RespondError(c, response.CodeInternal, "error.internal_error", nil)
+	if !h.ensureZhengyeAccess(c, uid) {
 		return
 	}
 	data, err := h.ZhengyeService.GetLevels(uid)
@@ -100,8 +119,7 @@ func (h *Handler) SaveZhengyeLevels(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if h.ZhengyeService == nil {
-		shared.RespondError(c, response.CodeInternal, "error.internal_error", nil)
+	if !h.ensureZhengyeAccess(c, uid) {
 		return
 	}
 	var req service.SaveZhengyeLevelsInput
@@ -131,8 +149,7 @@ func (h *Handler) GetZhengyeOrders(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if h.ZhengyeService == nil {
-		shared.RespondError(c, response.CodeInternal, "error.internal_error", nil)
+	if !h.ensureZhengyeAccess(c, uid) {
 		return
 	}
 	filter := service.ZhengyeOrdersFilter{
@@ -158,6 +175,9 @@ func (h *Handler) GetZhengyeOrders(c *gin.Context) {
 func (h *Handler) GetZhengyeTeam(c *gin.Context) {
 	uid, ok := shared.GetUserID(c)
 	if !ok {
+		return
+	}
+	if !h.ensureZhengyeAccess(c, uid) {
 		return
 	}
 	if h.ZhengyeService == nil {
@@ -187,6 +207,9 @@ func (h *Handler) GetZhengyePartners(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if !h.ensureZhengyeAccess(c, uid) {
+		return
+	}
 	if h.ZhengyeService == nil {
 		shared.RespondError(c, response.CodeInternal, "error.internal_error", nil)
 		return
@@ -212,6 +235,9 @@ type updatePartnerRateRequest struct {
 func (h *Handler) UpdateZhengyePartnerRate(c *gin.Context) {
 	uid, ok := shared.GetUserID(c)
 	if !ok {
+		return
+	}
+	if !h.ensureZhengyeAccess(c, uid) {
 		return
 	}
 	if h.ZhengyeService == nil {
@@ -245,6 +271,9 @@ func (h *Handler) GetZhengyeSettlement(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if !h.ensureZhengyeAccess(c, uid) {
+		return
+	}
 	if h.ZhengyeService == nil {
 		shared.RespondError(c, response.CodeInternal, "error.internal_error", nil)
 		return
@@ -274,8 +303,7 @@ func (h *Handler) PayZhengyeSettlement(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if h.ZhengyeService == nil {
-		shared.RespondError(c, response.CodeInternal, "error.internal_error", nil)
+	if !h.ensureZhengyeAccess(c, uid) {
 		return
 	}
 	var req paySettlementRequest
@@ -304,6 +332,9 @@ func (h *Handler) GetZhengyeContact(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if !h.ensureZhengyeAccess(c, uid) {
+		return
+	}
 	var contact models.AffiliateContact
 	if err := models.DB.Where("user_id = ?", uid).First(&contact).Error; err != nil {
 		response.Success(c, models.AffiliateContact{UserID: uid})
@@ -323,6 +354,9 @@ type saveContactRequest struct {
 func (h *Handler) SaveZhengyeContact(c *gin.Context) {
 	uid, ok := shared.GetUserID(c)
 	if !ok {
+		return
+	}
+	if !h.ensureZhengyeAccess(c, uid) {
 		return
 	}
 	var req saveContactRequest
@@ -361,6 +395,9 @@ func (h *Handler) GetZhengyeDiscount(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if !h.ensureZhengyeAccess(c, uid) {
+		return
+	}
 	var discount models.AffiliateDiscount
 	if err := models.DB.Where("user_id = ?", uid).First(&discount).Error; err != nil {
 		response.Success(c, models.AffiliateDiscount{UserID: uid})
@@ -379,6 +416,9 @@ type saveDiscountRequest struct {
 func (h *Handler) SaveZhengyeDiscount(c *gin.Context) {
 	uid, ok := shared.GetUserID(c)
 	if !ok {
+		return
+	}
+	if !h.ensureZhengyeAccess(c, uid) {
 		return
 	}
 	var req saveDiscountRequest
