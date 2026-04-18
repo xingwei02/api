@@ -35,8 +35,10 @@ type AdminAffiliateDiscountRequest struct {
 }
 
 type adminAffiliateDiscountResponse struct {
-	UserID       uint    `json:"user_id"`
-	DiscountRate float64 `json:"discount_rate"`
+	UserID              uint    `json:"user_id"`
+	DiscountRate        float64 `json:"discount_rate"`
+	MerchantPageEnabled bool    `json:"merchant_page_enabled"`
+	GroupSectionEnabled bool    `json:"group_section_enabled"`
 }
 
 // AdminAffiliateContactRequest 管理端 Token 商官方群内容配置
@@ -204,14 +206,16 @@ func (h *Handler) GetAffiliateUserDiscount(c *gin.Context) {
 	}
 
 	resp := adminAffiliateDiscountResponse{UserID: profile.UserID}
-	var scheme models.AffiliateLevelScheme
-	if err := models.DB.Where("user_id = ?", profile.UserID).First(&scheme).Error; err != nil {
+	var discount models.AffiliateDiscount
+	if err := models.DB.Where("user_id = ?", profile.UserID).First(&discount).Error; err != nil {
 		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			shared.RespondError(c, response.CodeInternal, "error.user_fetch_failed", err)
 			return
 		}
 	} else {
-		resp.DiscountRate = scheme.MyRate
+		resp.DiscountRate = discount.DiscountRate
+		resp.MerchantPageEnabled = discount.MerchantPageEnabled
+		resp.GroupSectionEnabled = discount.GroupSectionEnabled
 	}
 	response.Success(c, resp)
 }
@@ -229,7 +233,7 @@ func (h *Handler) UpdateAffiliateUserDiscount(c *gin.Context) {
 		shared.RespondBindError(c, err)
 		return
 	}
-	if req.DiscountRate < 0 || req.DiscountRate > 100 {
+	if req.DiscountRate < 0 || req.DiscountRate > 5 {
 		shared.RespondError(c, response.CodeBadRequest, "error.bad_request", nil)
 		return
 	}
@@ -255,28 +259,33 @@ func (h *Handler) UpdateAffiliateUserDiscount(c *gin.Context) {
 		return
 	}
 
-	var scheme models.AffiliateLevelScheme
-	result := models.DB.Where("user_id = ?", profile.UserID).First(&scheme)
-	scheme.UserID = profile.UserID
-	scheme.MyRate = req.DiscountRate
+	var discount models.AffiliateDiscount
+	result := models.DB.Where("user_id = ?", profile.UserID).First(&discount)
+	discount.UserID = profile.UserID
+	discount.DiscountRate = req.DiscountRate
+	discount.MerchantPageEnabled = req.MerchantPageEnabled
+	discount.GroupSectionEnabled = req.GroupSectionEnabled
 	if result.Error != nil {
 		if !errors.Is(result.Error, gorm.ErrRecordNotFound) {
 			shared.RespondError(c, response.CodeInternal, "error.save_failed", result.Error)
 			return
 		}
-		scheme.EntryRate = 0
-		scheme.Version = 1
-		if err := models.DB.Create(&scheme).Error; err != nil {
+		if err := models.DB.Create(&discount).Error; err != nil {
 			shared.RespondError(c, response.CodeInternal, "error.save_failed", err)
 			return
 		}
 	} else {
-		if err := models.DB.Save(&scheme).Error; err != nil {
+		if err := models.DB.Save(&discount).Error; err != nil {
 			shared.RespondError(c, response.CodeInternal, "error.save_failed", err)
 			return
 		}
 	}
-	response.Success(c, adminAffiliateDiscountResponse{UserID: profile.UserID, DiscountRate: scheme.MyRate})
+	response.Success(c, adminAffiliateDiscountResponse{
+		UserID:              profile.UserID,
+		DiscountRate:        discount.DiscountRate,
+		MerchantPageEnabled: discount.MerchantPageEnabled,
+		GroupSectionEnabled: discount.GroupSectionEnabled,
+	})
 }
 
 // AuthorizeAffiliateTokenMerchant 管理端手动授权 Token 商。
