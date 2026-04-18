@@ -322,6 +322,7 @@ func SetupRouter(cfg *config.Config, c *provider.Container) *gin.Engine {
 				authorized.GET("/affiliates/users", adminHandler.ListAffiliateUsers)
 				authorized.PATCH("/affiliates/users/:id/status", adminHandler.UpdateAffiliateUserStatus)
 				authorized.PATCH("/affiliates/users/batch-status", adminHandler.BatchUpdateAffiliateUserStatus)
+				authorized.POST("/affiliates/users/:id/authorize-token-merchant", adminHandler.AuthorizeAffiliateTokenMerchant)
 				authorized.GET("/affiliates/users/:id/discount", adminHandler.GetAffiliateUserDiscount)
 				authorized.PUT("/affiliates/users/:id/discount", adminHandler.UpdateAffiliateUserDiscount)
 				authorized.GET("/affiliates/users/:id/contact", adminHandler.GetAffiliateUserContact)

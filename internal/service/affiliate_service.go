@@ -92,8 +92,10 @@ type AffiliateWithdrawApplyInput struct {
 
 // AffiliateAdminUserItem 后台推广用户列表项
 type AffiliateAdminUserItem struct {
-	Profile models.AffiliateProfile `json:"profile"`
-	Stats   AffiliateStats          `json:"stats"`
+	Profile           models.AffiliateProfile `json:"profile"`
+	Stats             AffiliateStats          `json:"stats"`
+	TopDiscountRate   float64                 `json:"top_discount_rate"`
+	HasParentPromoter bool                    `json:"has_parent_promoter"`
 }
 
 // AffiliateAdminCommissionListFilter 后台佣金列表过滤
@@ -165,9 +167,13 @@ func (s *AffiliateService) OpenAffiliate(userID uint) (*models.AffiliateProfile,
 	if s.repo == nil || s.userRepo == nil {
 		return nil, ErrNotFound
 	}
-	setting, err := s.settingService.GetAffiliateSetting()
-	if err != nil {
-		return nil, err
+	setting := AffiliateDefaultSetting()
+	var err error
+	if s.settingService != nil {
+		setting, err = s.settingService.GetAffiliateSetting()
+		if err != nil {
+			return nil, err
+		}
 	}
 	if !setting.Enabled {
 		return nil, ErrAffiliateDisabled
@@ -964,6 +970,34 @@ func (s *AffiliateService) ListAdminUsers(filter repository.AffiliateProfileList
 	if err != nil {
 		return nil, 0, err
 	}
+
+	topDiscountRateMap := map[uint]float64{}
+	hasParentPromoterMap := map[uint]bool{}
+	if models.DB != nil && len(rows) > 0 {
+		userIDs := make([]uint, 0, len(rows))
+		for _, row := range rows {
+			if row.UserID > 0 {
+				userIDs = append(userIDs, row.UserID)
+			}
+		}
+		if len(userIDs) > 0 {
+			var schemes []models.AffiliateLevelScheme
+			if err := models.DB.Select("user_id", "my_rate").Where("user_id IN ?", userIDs).Find(&schemes).Error; err != nil {
+				return nil, 0, err
+			}
+			for _, scheme := range schemes {
+				topDiscountRateMap[scheme.UserID] = scheme.MyRate
+			}
+
+			var levels []models.UserPromotionLevel
+			if err := models.DB.Select("user_id", "parent_user_id").Where("user_id IN ?", userIDs).Find(&levels).Error; err != nil {
+				return nil, 0, err
+			}
+			for _, level := range levels {
+				hasParentPromoterMap[level.UserID] = level.ParentUserID > 0
+			}
+		}
+	}
 	result := make([]AffiliateAdminUserItem, 0, len(rows))
 	for _, row := range rows {
 		agg := statsMap[row.ID]
@@ -976,11 +1010,28 @@ func (s *AffiliateService) ListAdminUsers(filter repository.AffiliateProfileList
 			WithdrawnCommission: models.NewMoneyFromDecimal(agg.WithdrawnCommission.Round(2)),
 		}
 		result = append(result, AffiliateAdminUserItem{
-			Profile: row,
-			Stats:   stats,
+			Profile:           row,
+			Stats:             stats,
+			TopDiscountRate:   topDiscountRateMap[row.UserID],
+			HasParentPromoter: hasParentPromoterMap[row.UserID],
 		})
 	}
 	return result, total, nil
+}
+
+// AdminAuthorizeTokenMerchant 管理端手动授权 Token 商身份。
+func (s *AffiliateService) AdminAuthorizeTokenMerchant(profileID uint) (*models.AffiliateProfile, error) {
+	if profileID == 0 || s.repo == nil {
+		return nil, ErrNotFound
+	}
+	profile, err := s.repo.GetProfileByID(profileID)
+	if err != nil {
+		return nil, err
+	}
+	if profile == nil || profile.UserID == 0 {
+		return nil, ErrNotFound
+	}
+	return s.OpenTokenMerchant(profile.UserID, "")
 }
 
 // ListAdminCommissions 后台查询佣金记录

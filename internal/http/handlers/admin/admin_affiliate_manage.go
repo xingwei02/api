@@ -34,6 +34,11 @@ type AdminAffiliateDiscountRequest struct {
 	GroupSectionEnabled bool    `json:"group_section_enabled"`
 }
 
+type adminAffiliateDiscountResponse struct {
+	UserID       uint    `json:"user_id"`
+	DiscountRate float64 `json:"discount_rate"`
+}
+
 // AdminAffiliateContactRequest 管理端 Token 商官方群内容配置
 type AdminAffiliateContactRequest struct {
 	Phone               string `json:"phone"`
@@ -198,14 +203,17 @@ func (h *Handler) GetAffiliateUserDiscount(c *gin.Context) {
 		return
 	}
 
-	discount := models.AffiliateDiscount{UserID: profile.UserID}
-	if err := models.DB.Where("user_id = ?", profile.UserID).First(&discount).Error; err != nil {
+	resp := adminAffiliateDiscountResponse{UserID: profile.UserID}
+	var scheme models.AffiliateLevelScheme
+	if err := models.DB.Where("user_id = ?", profile.UserID).First(&scheme).Error; err != nil {
 		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			shared.RespondError(c, response.CodeInternal, "error.user_fetch_failed", err)
 			return
 		}
+	} else {
+		resp.DiscountRate = scheme.MyRate
 	}
-	response.Success(c, discount)
+	response.Success(c, resp)
 }
 
 // UpdateAffiliateUserDiscount 管理端更新 Token 商折扣配置
@@ -221,7 +229,7 @@ func (h *Handler) UpdateAffiliateUserDiscount(c *gin.Context) {
 		shared.RespondBindError(c, err)
 		return
 	}
-	if req.DiscountRate < 0 || req.DiscountRate > 5 {
+	if req.DiscountRate < 0 || req.DiscountRate > 100 {
 		shared.RespondError(c, response.CodeBadRequest, "error.bad_request", nil)
 		return
 	}
@@ -236,28 +244,65 @@ func (h *Handler) UpdateAffiliateUserDiscount(c *gin.Context) {
 		return
 	}
 
-	var discount models.AffiliateDiscount
-	result := models.DB.Where("user_id = ?", profile.UserID).First(&discount)
-	discount.UserID = profile.UserID
-	discount.DiscountRate = req.DiscountRate
-	discount.MerchantPageEnabled = req.MerchantPageEnabled
-	discount.GroupSectionEnabled = req.GroupSectionEnabled
+	var promotionLevel models.UserPromotionLevel
+	if err := models.DB.Select("user_id", "parent_user_id").Where("user_id = ?", profile.UserID).First(&promotionLevel).Error; err == nil {
+		if promotionLevel.ParentUserID > 0 {
+			shared.RespondError(c, response.CodeBadRequest, "error.bad_request", nil)
+			return
+		}
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		shared.RespondError(c, response.CodeInternal, "error.save_failed", err)
+		return
+	}
+
+	var scheme models.AffiliateLevelScheme
+	result := models.DB.Where("user_id = ?", profile.UserID).First(&scheme)
+	scheme.UserID = profile.UserID
+	scheme.MyRate = req.DiscountRate
 	if result.Error != nil {
 		if !errors.Is(result.Error, gorm.ErrRecordNotFound) {
 			shared.RespondError(c, response.CodeInternal, "error.save_failed", result.Error)
 			return
 		}
-		if err := models.DB.Create(&discount).Error; err != nil {
+		scheme.EntryRate = 0
+		scheme.Version = 1
+		if err := models.DB.Create(&scheme).Error; err != nil {
 			shared.RespondError(c, response.CodeInternal, "error.save_failed", err)
 			return
 		}
 	} else {
-		if err := models.DB.Save(&discount).Error; err != nil {
+		if err := models.DB.Save(&scheme).Error; err != nil {
 			shared.RespondError(c, response.CodeInternal, "error.save_failed", err)
 			return
 		}
 	}
-	response.Success(c, discount)
+	response.Success(c, adminAffiliateDiscountResponse{UserID: profile.UserID, DiscountRate: scheme.MyRate})
+}
+
+// AuthorizeAffiliateTokenMerchant 管理端手动授权 Token 商。
+func (h *Handler) AuthorizeAffiliateTokenMerchant(c *gin.Context) {
+	if h.AffiliateService == nil {
+		shared.RespondError(c, response.CodeInternal, "error.save_failed", nil)
+		return
+	}
+	profileID, err := shared.ParseParamUint(c, "id")
+	if err != nil {
+		shared.RespondError(c, response.CodeBadRequest, "error.bad_request", nil)
+		return
+	}
+	profile, err := h.AffiliateService.AdminAuthorizeTokenMerchant(profileID)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrNotFound):
+			shared.RespondError(c, response.CodeNotFound, "error.bad_request", nil)
+		case errors.Is(err, service.ErrAffiliateDisabled):
+			shared.RespondError(c, response.CodeBadRequest, "error.forbidden", nil)
+		default:
+			shared.RespondError(c, response.CodeInternal, "error.save_failed", err)
+		}
+		return
+	}
+	response.Success(c, profile)
 }
 
 // GetAffiliateUserContact 管理端获取 Token 商官方群内容配置
