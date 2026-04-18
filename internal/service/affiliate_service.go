@@ -1001,6 +1001,8 @@ func (s *AffiliateService) ListAdminUsers(filter repository.AffiliateProfileList
 	result := make([]AffiliateAdminUserItem, 0, len(rows))
 	for _, row := range rows {
 		agg := statsMap[row.ID]
+		row.IsTokenMerchant = row.User.IsTokenMerchant
+		row.TopDiscountRate = topDiscountRateMap[row.UserID]
 		stats := AffiliateStats{
 			ClickCount:          agg.ClickCount,
 			ValidOrderCount:     agg.ValidOrderCount,
