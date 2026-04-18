@@ -989,11 +989,11 @@ func (s *AffiliateService) ListAdminUsers(filter repository.AffiliateProfileList
 				topDiscountRateMap[scheme.UserID] = scheme.MyRate
 			}
 
-			var levels []models.UserPromotionLevel
-			if err := models.DB.Select("user_id", "parent_user_id").Where("user_id IN ?", userIDs).Find(&levels).Error; err != nil {
+			var promotionLevels []models.UserPromotionLevel
+			if err := models.DB.Select("user_id", "parent_user_id").Where("user_id IN ?", userIDs).Find(&promotionLevels).Error; err != nil {
 				return nil, 0, err
 			}
-			for _, level := range levels {
+			for _, level := range promotionLevels {
 				hasParentPromoterMap[level.UserID] = level.ParentUserID > 0
 			}
 		}

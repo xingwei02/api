@@ -248,17 +248,6 @@ func (h *Handler) UpdateAffiliateUserDiscount(c *gin.Context) {
 		return
 	}
 
-	var promotionLevel models.UserPromotionLevel
-	if err := models.DB.Select("user_id", "parent_user_id").Where("user_id = ?", profile.UserID).First(&promotionLevel).Error; err == nil {
-		if promotionLevel.ParentUserID > 0 {
-			shared.RespondError(c, response.CodeBadRequest, "error.bad_request", nil)
-			return
-		}
-	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-		shared.RespondError(c, response.CodeInternal, "error.save_failed", err)
-		return
-	}
-
 	var discount models.AffiliateDiscount
 	result := models.DB.Where("user_id = ?", profile.UserID).First(&discount)
 	discount.UserID = profile.UserID
