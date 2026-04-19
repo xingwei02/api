@@ -426,9 +426,9 @@ func (h *Handler) SaveZhengyeDiscount(c *gin.Context) {
 		shared.RespondBindError(c, err)
 		return
 	}
-	// 折扣率上限 5%（业务规则）
-	if req.DiscountRate > 5 {
-		response.Error(c, http.StatusBadRequest, "discount_rate cannot exceed 5%")
+	// 客户优惠上限 5%（业务规则，不可超过）
+	if req.DiscountRate < 0 || req.DiscountRate > 5 {
+		response.Error(c, http.StatusBadRequest, "discount_rate must be between 0 and 5")
 		return
 	}
 	var discount models.AffiliateDiscount

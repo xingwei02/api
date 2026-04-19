@@ -57,6 +57,9 @@ func BuiltinRoleSeeds() []RoleSeed {
 				{Object: "/admin/affiliates/users", Action: "GET"},
 				{Object: "/admin/affiliates/users/:id/status", Action: "PATCH"},
 				{Object: "/admin/affiliates/users/batch-status", Action: "PATCH"},
+				{Object: "/admin/affiliates/users/:id/authorize-token-merchant", Action: "POST"},
+				{Object: "/admin/affiliates/users/:id/discount", Action: "PUT"},
+				{Object: "/admin/affiliates/users/:id/contact", Action: "PUT"},
 				// 会员等级管理
 				{Object: "/admin/member-levels", Action: "*"},
 				{Object: "/admin/member-levels/:id", Action: "*"},
