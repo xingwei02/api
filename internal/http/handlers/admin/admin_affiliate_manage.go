@@ -305,6 +305,31 @@ func (h *Handler) UpdateAffiliateUserDiscount(c *gin.Context) {
 	})
 }
 
+// AuthorizeTokenMerchantByUserID 管理端通过普通用户 ID 直接授权 Token 商（无需先有推广档案）。
+func (h *Handler) AuthorizeTokenMerchantByUserID(c *gin.Context) {
+	if h.AffiliateService == nil {
+		shared.RespondError(c, response.CodeInternal, "error.save_failed", nil)
+		return
+	}
+	userID, err := shared.ParseParamUint(c, "id")
+	if err != nil {
+		shared.RespondError(c, response.CodeBadRequest, "error.bad_request", nil)
+		return
+	}
+	// OpenTokenMerchant 会自动创建 profile（如果不存在），再设置 is_token_merchant=true
+	profile, err := h.AffiliateService.OpenTokenMerchant(userID, "")
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrNotFound):
+			shared.RespondError(c, response.CodeNotFound, "error.bad_request", nil)
+		default:
+			shared.RespondError(c, response.CodeInternal, "error.save_failed", err)
+		}
+		return
+	}
+	response.Success(c, profile)
+}
+
 // AuthorizeAffiliateTokenMerchant 管理端手动授权 Token 商。
 func (h *Handler) AuthorizeAffiliateTokenMerchant(c *gin.Context) {
 	if h.AffiliateService == nil {

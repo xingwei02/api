@@ -88,6 +88,7 @@ func BuiltinRoleSeeds() []RoleSeed {
 				{Object: "/admin/users/:id/wallet", Action: "GET"},
 				{Object: "/admin/users/:id/wallet/transactions", Action: "GET"},
 				{Object: "/admin/users/:id/wallet/adjust", Action: "POST"},
+				{Object: "/admin/users/:id/authorize-token-merchant", Action: "POST"},
 				{Object: "/admin/users/:id/member-level", Action: "PUT"},
 				{Object: "/admin/user-login-logs", Action: "GET"},
 				{Object: "/admin/wallet/recharges", Action: "GET"},
