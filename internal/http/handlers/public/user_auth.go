@@ -115,6 +115,7 @@ type UserRegisterRequest struct {
 	Password          string `json:"password" binding:"required"`
 	Code              string `json:"code"`
 	AgreementAccepted bool   `json:"agreement_accepted"`
+	InviterCode       string `json:"inviter_code"`
 }
 
 // UserRegister 用户注册
@@ -143,7 +144,7 @@ func (h *Handler) UserRegister(c *gin.Context) {
 		return
 	}
 
-	user, token, expiresAt, err := h.UserAuthService.Register(req.Email, req.Password, req.Code, req.AgreementAccepted, emailVerificationEnabled)
+	user, token, expiresAt, err := h.UserAuthService.Register(req.Email, req.Password, req.Code, req.InviterCode, req.AgreementAccepted, emailVerificationEnabled)
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrInvalidEmail):

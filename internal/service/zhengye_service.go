@@ -570,8 +570,8 @@ func (s *ZhengyeService) GetDashboard(userID uint) (*ZhengyeDashboardDTO, error)
 	var directPartners int64
 	s.db.Model(&models.UserPromotionLevel{}).Where("parent_user_id = ?", userID).Count(&directPartners)
 
-	// 全部伙伴数（同直属，因为 UserPromotionLevel 只记录直属关系）
-	totalPartners := directPartners
+	// 全部伙伴数（递归统计整个下级网络）
+	totalPartners := s.countNetworkPartners(userID)
 
 	var todayOrders int64
 	s.db.Model(&models.AffiliateCommission{}).
@@ -818,6 +818,8 @@ func (s *ZhengyeService) GetOrders(userID uint, filter ZhengyeOrdersFilter) (*Zh
 		orderNo := fmt.Sprintf("ORD%08d", c.OrderID)
 		productName := ""
 		channel := "我的直销"
+		partnerCommission := 0.0
+		referrerCost := 0.0
 
 		if c.Order.ID > 0 {
 			orderNo = c.Order.OrderNo
@@ -837,6 +839,17 @@ func (s *ZhengyeService) GetOrders(userID uint, filter ZhengyeOrdersFilter) (*Zh
 					channel = "伙伴渠道"
 				}
 			}
+
+			if c.Order.AffiliateCode != "" {
+				var ownerProfile models.AffiliateProfile
+				if err := s.db.Where("affiliate_code = ?", c.Order.AffiliateCode).First(&ownerProfile).Error; err == nil && ownerProfile.UserID > 0 && ownerProfile.UserID != userID {
+					var partnerLevel models.UserPromotionLevel
+					if err := s.db.Where("user_id = ? AND parent_user_id = ?", ownerProfile.UserID, userID).First(&partnerLevel).Error; err == nil {
+						partnerCommission = c.BaseAmount.InexactFloat64() * partnerLevel.CurrentRate / 100
+						referrerCost = c.BaseAmount.InexactFloat64() - c.CommissionAmount.InexactFloat64() - partnerCommission
+					}
+				}
+			}
 		}
 
 		items = append(items, ZhengyeOrderItem{
@@ -846,8 +859,8 @@ func (s *ZhengyeService) GetOrders(userID uint, filter ZhengyeOrdersFilter) (*Zh
 			ProductName:       productName,
 			Amount:            zhengyeFormatMoney(c.BaseAmount.InexactFloat64()),
 			Commission:        zhengyeFormatMoney(c.CommissionAmount.InexactFloat64()),
-			PartnerCommission: "0.00",
-			ReferrerCost:      "0.00",
+			PartnerCommission: zhengyeFormatMoney(partnerCommission),
+			ReferrerCost:      zhengyeFormatMoney(referrerCost),
 			Status:            c.Status,
 			CreatedAt:         c.CreatedAt.Format("2006-01-02 15:04:05"),
 		})
@@ -874,8 +887,8 @@ func (s *ZhengyeService) GetTeam(userID uint, filter ZhengyeTeamFilter) (*Zhengy
 	var directCount int64
 	s.db.Model(&models.UserPromotionLevel{}).Where("parent_user_id = ?", userID).Count(&directCount)
 
-	// 全部伙伴数（同直属，因为 UserPromotionLevel 只记录直属关系）
-	totalCount := directCount
+	// 全部伙伴数（递归统计整个下级网络）
+	totalCount := s.countNetworkPartners(userID)
 
 	// 网络下单用户数：通过当前用户的 affiliate_profile 关联的订单中的 user_id 去重
 	var networkBuyers int64
@@ -1130,8 +1143,54 @@ func (s *ZhengyeService) GetRank(currentUserID uint) (*ZhengyeRankDTO, error) {
 		}
 	}
 
-	// 今日网络王（自己今日销售额，简化版：等同于今日销售额）
-	dto.TopNetwork = dto.TopSales
+	// 今日网络王（自己 + 全下级网络今日销售额）
+	type networkRow struct {
+		UserID       uint
+		DisplayName  string
+		NetworkSales float64
+	}
+	var networkRows []networkRow
+	var profiles []models.AffiliateProfile
+	if err := s.db.Select("user_id").Find(&profiles).Error; err == nil {
+		for _, p := range profiles {
+			uid := p.UserID
+			if uid == 0 {
+				continue
+			}
+			networkUserIDs := append([]uint{uid}, s.collectDescendantUserIDs(uid)...)
+			var ids []uint
+			if err := s.db.Model(&models.AffiliateProfile{}).Where("user_id IN ?", networkUserIDs).Pluck("id", &ids).Error; err != nil || len(ids) == 0 {
+				continue
+			}
+			var sales float64
+			s.db.Model(&models.AffiliateCommission{}).
+				Where("affiliate_profile_id IN ? AND created_at >= ?", ids, todayStart).
+				Select("COALESCE(SUM(base_amount),0)").Scan(&sales)
+			var user models.User
+			displayName := ""
+			if err := s.db.Select("id", "display_name").First(&user, uid).Error; err == nil {
+				displayName = user.DisplayName
+			}
+			networkRows = append(networkRows, networkRow{UserID: uid, DisplayName: displayName, NetworkSales: sales})
+		}
+	}
+	if len(networkRows) > 0 {
+		for i := 0; i < len(networkRows)-1; i++ {
+			for j := i + 1; j < len(networkRows); j++ {
+				if networkRows[j].NetworkSales > networkRows[i].NetworkSales {
+					networkRows[i], networkRows[j] = networkRows[j], networkRows[i]
+				}
+			}
+		}
+		dto.TopNetwork = ZhengyeRankDimension{Name: networkRows[0].DisplayName, Value: zhengyeFormatMoney(networkRows[0].NetworkSales)}
+		for i, r := range networkRows {
+			if r.UserID == currentUserID {
+				dto.TopNetwork.Rank = i + 1
+				dto.TopNetwork.MyVal = zhengyeFormatMoney(r.NetworkSales)
+				break
+			}
+		}
+	}
 
 	// 历史闪电王（Token 商注册到首单最短分钟数）
 	type fastRow struct {
@@ -1244,6 +1303,7 @@ func (s *ZhengyeService) GetPartners(userID uint, filter ZhengyePartnersFilter) 
 		var partnerProfile models.AffiliateProfile
 		var todayDirectSales, totalDirectSales, todayCommission, totalCommission float64
 		var totalNetworkOrders int64
+		var todayNetworkSales, totalNetworkSales float64
 		var affiliateCode string
 
 		if err := s.db.Where("user_id = ?", l.UserID).First(&partnerProfile).Error; err == nil {
@@ -1268,6 +1328,22 @@ func (s *ZhengyeService) GetPartners(userID uint, filter ZhengyePartnersFilter) 
 			s.db.Model(&models.AffiliateCommission{}).
 				Where("affiliate_profile_id = ?", partnerProfile.ID).
 				Count(&totalNetworkOrders)
+		}
+
+		networkUserIDs := append([]uint{l.UserID}, s.collectDescendantUserIDs(l.UserID)...)
+		if len(networkUserIDs) > 0 {
+			var networkProfileIDs []uint
+			if err := s.db.Model(&models.AffiliateProfile{}).Where("user_id IN ?", networkUserIDs).Pluck("id", &networkProfileIDs).Error; err == nil && len(networkProfileIDs) > 0 {
+				s.db.Model(&models.AffiliateCommission{}).
+					Where("affiliate_profile_id IN ? AND created_at >= ?", networkProfileIDs, todayStart).
+					Select("COALESCE(SUM(base_amount), 0)").Scan(&todayNetworkSales)
+				s.db.Model(&models.AffiliateCommission{}).
+					Where("affiliate_profile_id IN ?", networkProfileIDs).
+					Select("COALESCE(SUM(base_amount), 0)").Scan(&totalNetworkSales)
+				s.db.Model(&models.AffiliateCommission{}).
+					Where("affiliate_profile_id IN ?", networkProfileIDs).
+					Count(&totalNetworkOrders)
+			}
 		}
 
 		// 档位名称和图标
@@ -1296,8 +1372,8 @@ func (s *ZhengyeService) GetPartners(userID uint, filter ZhengyePartnersFilter) 
 			MaxRate:            l.MaxRate,
 			TodayDirectSales:   zhengyeFormatMoney(todayDirectSales),
 			TotalDirectSales:   zhengyeFormatMoney(totalDirectSales),
-			TodayNetworkSales:  zhengyeFormatMoney(todayDirectSales),
-			TotalNetworkSales:  zhengyeFormatMoney(totalDirectSales),
+			TodayNetworkSales:  zhengyeFormatMoney(todayNetworkSales),
+			TotalNetworkSales:  zhengyeFormatMoney(totalNetworkSales),
 			TotalNetworkOrders: totalNetworkOrders,
 			TodaySettlement:    zhengyeFormatMoney(todayCommission),
 			TotalSettlement:    zhengyeFormatMoney(totalCommission),
@@ -1405,6 +1481,36 @@ func (s *ZhengyeService) GetSettlement(userID uint, filter ZhengyeSettlementFilt
 	}
 
 	return &ZhengyeSettlementDTO{Items: items, Total: partners.Total, Page: partners.Page, PageSize: partners.PageSize}, nil
+}
+
+func (s *ZhengyeService) collectDescendantUserIDs(userID uint) []uint {
+	if s == nil || s.db == nil || userID == 0 {
+		return []uint{}
+	}
+	visited := map[uint]bool{userID: true}
+	queue := []uint{userID}
+	result := make([]uint, 0)
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		var children []uint
+		if err := s.db.Model(&models.UserPromotionLevel{}).Where("parent_user_id = ?", current).Pluck("user_id", &children).Error; err != nil {
+			continue
+		}
+		for _, child := range children {
+			if child == 0 || visited[child] {
+				continue
+			}
+			visited[child] = true
+			result = append(result, child)
+			queue = append(queue, child)
+		}
+	}
+	return result
+}
+
+func (s *ZhengyeService) countNetworkPartners(userID uint) int64 {
+	return int64(len(s.collectDescendantUserIDs(userID)))
 }
 
 // PaySettlement 执行手动结算

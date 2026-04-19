@@ -18,6 +18,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 )
 
 // UserAuthService 用户认证服务
@@ -172,7 +173,7 @@ func (s *UserAuthService) SendVerifyCode(email, purpose, locale string) error {
 }
 
 // Register 用户注册
-func (s *UserAuthService) Register(email, password, code string, agreementAccepted bool, emailVerificationEnabled bool) (*models.User, string, time.Time, error) {
+func (s *UserAuthService) Register(email, password, code, inviterCode string, agreementAccepted bool, emailVerificationEnabled bool) (*models.User, string, time.Time, error) {
 	if !agreementAccepted {
 		return nil, "", time.Time{}, ErrAgreementRequired
 	}
@@ -219,6 +220,10 @@ func (s *UserAuthService) Register(email, password, code string, agreementAccept
 		return nil, "", time.Time{}, err
 	}
 
+	if err := s.bindInviterRelation(user.ID, inviterCode); err != nil {
+		return nil, "", time.Time{}, err
+	}
+
 	token, expiresAt, err := s.GenerateUserJWT(user, 0)
 	if err != nil {
 		return nil, "", time.Time{}, err
@@ -236,6 +241,63 @@ func (s *UserAuthService) Register(email, password, code string, agreementAccept
 	}
 
 	return user, token, expiresAt, nil
+}
+
+func (s *UserAuthService) bindInviterRelation(userID uint, inviterCode string) error {
+	code := normalizeAffiliateCode(inviterCode)
+	if userID == 0 || code == "" || models.DB == nil {
+		return nil
+	}
+
+	var inviterProfile models.AffiliateProfile
+	if err := models.DB.Where("affiliate_code = ?", code).First(&inviterProfile).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil
+		}
+		return err
+	}
+	if inviterProfile.UserID == 0 || inviterProfile.UserID == userID {
+		return nil
+	}
+
+	var existing models.UserPromotionLevel
+	if err := models.DB.Where("user_id = ?", userID).First(&existing).Error; err == nil {
+		return nil
+	} else if err != gorm.ErrRecordNotFound {
+		return err
+	}
+
+	entryRate := 0.0
+	entryItemID := uint(0)
+	var inviterScheme models.AffiliateLevelScheme
+	if err := models.DB.Preload("Items", func(db *gorm.DB) *gorm.DB {
+		return db.Order("sort_order asc, id asc")
+	}).Where("user_id = ?", inviterProfile.UserID).First(&inviterScheme).Error; err == nil {
+		entryRate = inviterScheme.EntryRate
+		for _, item := range inviterScheme.Items {
+			if item.IsEntry {
+				entryItemID = item.ID
+				if item.Rate > 0 {
+					entryRate = item.Rate
+				}
+				break
+			}
+		}
+	}
+
+	now := time.Now()
+	level := models.UserPromotionLevel{
+		UserID:       userID,
+		ParentUserID: inviterProfile.UserID,
+		LevelItemID:  entryItemID,
+		MaxRate:      entryRate,
+		CustomRate:   -1,
+		CurrentLevel: 1,
+		CurrentRate:  entryRate,
+		CycleStart:   now,
+		CycleEnd:     now.AddDate(0, 1, 0),
+	}
+	return models.DB.Create(&level).Error
 }
 
 // Login 用户登录
