@@ -547,13 +547,8 @@ func (s *AffiliateService) HandleOrderPaid(orderID uint) error {
 		return nil
 	}
 
-	// 查推广者的客户折扣配置，计算实付金额
-	var discount models.AffiliateDiscount
-	actualAmount := baseAmount
-	if err2 := models.DB.Where("user_id = ?", profile.UserID).First(&discount).Error; err2 == nil {
-		discountRate := decimal.NewFromFloat(discount.DiscountRate).Div(decimal.NewFromInt(100))
-		actualAmount = baseAmount.Mul(decimal.NewFromInt(1).Sub(discountRate)).Round(2)
-	}
+	// 推广折扣已在订单构价时扣减到 TotalAmount，返佣基数直接使用订单实付金额
+	actualAmount := order.TotalAmount.Decimal.Round(2)
 	if actualAmount.LessThanOrEqual(decimal.Zero) {
 		return nil
 	}

@@ -215,6 +215,7 @@ type OrderPreview struct {
 	MemberDiscountAmount    models.Money       `json:"member_discount_amount"`
 	DiscountAmount          models.Money       `json:"discount_amount"`
 	PromotionDiscountAmount models.Money       `json:"promotion_discount_amount"`
+	AffiliateDiscountAmount models.Money       `json:"affiliate_discount_amount"`
 	TotalAmount             models.Money       `json:"total_amount"`
 	Items                   []OrderPreviewItem `json:"items"`
 }
@@ -242,6 +243,7 @@ type orderBuildResult struct {
 	MemberDiscountAmount    decimal.Decimal
 	PromotionDiscountAmount decimal.Decimal
 	DiscountAmount          decimal.Decimal
+	AffiliateDiscountAmount decimal.Decimal // 推广商客户优惠金额
 	TotalAmount             decimal.Decimal
 	Currency                string
 	OrderPromotionID        *uint
@@ -310,6 +312,7 @@ func (s *OrderService) previewOrder(input orderCreateParams) (*OrderPreview, err
 		MemberDiscountAmount:    models.NewMoneyFromDecimal(result.MemberDiscountAmount),
 		DiscountAmount:          models.NewMoneyFromDecimal(result.DiscountAmount),
 		PromotionDiscountAmount: models.NewMoneyFromDecimal(result.PromotionDiscountAmount),
+		AffiliateDiscountAmount: models.NewMoneyFromDecimal(result.AffiliateDiscountAmount),
 		TotalAmount:             models.NewMoneyFromDecimal(result.TotalAmount),
 		Items:                   items,
 	}, nil

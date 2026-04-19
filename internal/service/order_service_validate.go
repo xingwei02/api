@@ -257,6 +257,27 @@ func (s *OrderService) buildOrderResult(input orderCreateParams) (*orderBuildRes
 		return nil, ErrInvalidOrderAmount
 	}
 
+	// 推广商客户优惠：根据归因的 affiliate_code 查推广商设置的 discount_rate，从 totalAmount 中扣减
+	affiliateDiscountAmount := decimal.Zero
+	affiliateCode := normalizeAffiliateCode(input.AffiliateCode)
+	if affiliateCode != "" && models.DB != nil {
+		var affProfile models.AffiliateProfile
+		if err := models.DB.Where("affiliate_code = ? AND status = ?", affiliateCode, "active").First(&affProfile).Error; err == nil && affProfile.UserID > 0 {
+			var affDiscount models.AffiliateDiscount
+			if err := models.DB.Where("user_id = ?", affProfile.UserID).First(&affDiscount).Error; err == nil && affDiscount.DiscountRate > 0 {
+				rate := decimal.NewFromFloat(affDiscount.DiscountRate).Div(decimal.NewFromInt(100))
+				affiliateDiscountAmount = totalAmount.Mul(rate).Round(2)
+				if affiliateDiscountAmount.GreaterThan(totalAmount) {
+					affiliateDiscountAmount = totalAmount
+				}
+				totalAmount = totalAmount.Sub(affiliateDiscountAmount).Round(2)
+				if totalAmount.LessThanOrEqual(decimal.Zero) {
+					totalAmount = decimal.NewFromFloat(0.01) // 最低 0.01 防止零元订单
+				}
+			}
+		}
+	}
+
 	return &orderBuildResult{
 		Plans:                   plans,
 		OrderItems:              orderItems,
@@ -264,6 +285,7 @@ func (s *OrderService) buildOrderResult(input orderCreateParams) (*orderBuildRes
 		MemberDiscountAmount:    memberDiscountAmount,
 		PromotionDiscountAmount: promotionDiscountAmount,
 		DiscountAmount:          discountAmount,
+		AffiliateDiscountAmount: affiliateDiscountAmount,
 		TotalAmount:             totalAmount,
 		Currency:                currency,
 		OrderPromotionID:        orderPromotionID,
