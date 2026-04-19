@@ -47,6 +47,7 @@ func (c *Consumer) Register(mux *asynq.ServeMux) {
 	mux.HandleFunc(queue.TaskWalletRechargeExpire, c.handleWalletRechargeExpire)
 	mux.HandleFunc(queue.TaskNotificationDispatch, c.handleNotificationDispatch)
 	mux.HandleFunc(queue.TaskAffiliateConfirmCommissions, c.handleAffiliateConfirmCommissions)
+	mux.HandleFunc(queue.TaskAffiliateLevelUpgradeCheck, c.handleAffiliateLevelUpgradeCheck)
 	mux.HandleFunc(queue.TaskUpstreamSyncStock, c.handleUpstreamSyncStock)
 	mux.HandleFunc(queue.TaskProcurementSubmit, c.handleProcurementSubmit)
 	mux.HandleFunc(queue.TaskProcurementPollStatus, c.handleProcurementPollStatus)
@@ -338,6 +339,15 @@ func (c *Consumer) handleAffiliateConfirmCommissions(_ context.Context, _ *asynq
 		logger.Warnw("worker_affiliate_confirm_due_failed", "error", err)
 		return err
 	}
+	return nil
+}
+
+func (c *Consumer) handleAffiliateLevelUpgradeCheck(_ context.Context, _ *asynq.Task) error {
+	if c == nil || c.LevelUpgradeService == nil {
+		logger.Debugw("worker_affiliate_level_upgrade_skip_nil", "consumer_nil", c == nil)
+		return nil
+	}
+	c.LevelUpgradeService.RunDailyUpgradeCheck()
 	return nil
 }
 

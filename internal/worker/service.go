@@ -59,6 +59,16 @@ func registerPeriodicTasks(scheduler *asynq.Scheduler, consumer *Consumer, cfg *
 			logger.Infow("scheduler_register_affiliate_confirm_ok", "entry_id", entryID)
 		}
 	}
+	if consumer.LevelUpgradeService != nil {
+		// 每天北京时间凌晨3点执行等级升级检查（CRON_TZ=Asia/Shanghai）
+		task := queue.NewAffiliateLevelUpgradeCheckTask()
+		entryID, err := scheduler.Register("CRON_TZ=Asia/Shanghai 0 3 * * *", task, asynq.Queue(queue.DefaultQueue))
+		if err != nil {
+			logger.Warnw("scheduler_register_affiliate_level_upgrade_failed", "error", err)
+		} else {
+			logger.Infow("scheduler_register_affiliate_level_upgrade_ok", "entry_id", entryID)
+		}
+	}
 	if consumer.ProductMappingService != nil {
 		syncInterval := "5m"
 		if cfg != nil && cfg.UpstreamSyncInterval != "" {

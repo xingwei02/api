@@ -154,6 +154,7 @@ func AutoMigrate() error {
 		&AffiliateLevelItem{},
 		&AffiliateContact{},
 		&AffiliateDiscount{},
+		&AffiliateRankConfig{},
 		&AffiliateSettlement{},
 	); err != nil {
 		return err

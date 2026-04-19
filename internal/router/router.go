@@ -316,6 +316,8 @@ func SetupRouter(cfg *config.Config, c *provider.Container) *gin.Engine {
 				authorized.POST("/settings/order-email-template/reset", adminHandler.ResetOrderEmailTemplateSettings)
 				authorized.GET("/settings/affiliate", adminHandler.GetAffiliateSettings)
 				authorized.PUT("/settings/affiliate", adminHandler.UpdateAffiliateSettings)
+				authorized.GET("/affiliate/rank-config", adminHandler.GetRankConfig)
+				authorized.PUT("/affiliate/rank-config", adminHandler.SaveRankConfig)
 				authorized.PUT("/password", adminHandler.UpdateAdminPassword) // 修改密码
 
 				// 推广返利

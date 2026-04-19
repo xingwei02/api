@@ -420,15 +420,14 @@ func (s *AffiliateService) ResolveOrderAffiliateSnapshot(userID uint, rawCode, r
 		return nil, "", nil
 	}
 
+	// visitor_key 优先（最近30天最后一次有效点击）
 	if visitorKey != "" {
 		profile, err := s.repo.GetLatestActiveProfileByVisitorKey(visitorKey, time.Now().Add(-affiliateAttributionWindow))
 		if err != nil {
 			return nil, "", err
 		}
 		if profile != nil {
-			if userID > 0 && profile.UserID == userID {
-				return nil, "", nil
-			}
+			// 注意：不再过滤自购，游客和已登录用户均可触发佣金
 			profileID := profile.ID
 			return &profileID, profile.AffiliateCode, nil
 		}
@@ -445,9 +444,7 @@ func (s *AffiliateService) ResolveOrderAffiliateSnapshot(userID uint, rawCode, r
 	if profile == nil || strings.TrimSpace(profile.Status) != constants.AffiliateProfileStatusActive {
 		return nil, "", nil
 	}
-	if userID > 0 && profile.UserID == userID {
-		return nil, "", nil
-	}
+	// 注意：不再过滤自购，游客和已登录用户均可触发佣金
 
 	profileID := profile.ID
 	return &profileID, profile.AffiliateCode, nil
@@ -500,7 +497,15 @@ func (s *AffiliateService) TrackClick(input AffiliateTrackClickInput) error {
 	return s.repo.CreateClick(click)
 }
 
-// HandleOrderPaid 处理订单支付成功后的佣金生成
+// HandleOrderPaid 处理订单支付成功后的佣金生成（多级分佣）
+//
+// 业务规则：
+//  1. 找到推广链接归因的直接 Token 商（推广者）
+//  2. 查推广者的 discount_rate，计算客户实付金额（原价 × (1 - discount/100)）
+//  3. 推广者佣金 = 实付金额 × 推广者档位比例（current_rate）
+//  4. 推广者的上级差价 = 实付金额 × (上级 my_rate - 推广者 current_rate)
+//  5. 以此类推，直到顶层 Token 商
+//  6. 每一级写一条 affiliate_commissions 记录
 func (s *AffiliateService) HandleOrderPaid(orderID uint) error {
 	if orderID == 0 || s.repo == nil || s.orderRepo == nil {
 		return nil
@@ -509,7 +514,7 @@ func (s *AffiliateService) HandleOrderPaid(orderID uint) error {
 	if err != nil {
 		return err
 	}
-	if !setting.Enabled || setting.CommissionRate <= 0 {
+	if !setting.Enabled {
 		return nil
 	}
 
@@ -520,6 +525,8 @@ func (s *AffiliateService) HandleOrderPaid(orderID uint) error {
 	if order == nil {
 		return nil
 	}
+
+	// 找到直接推广者的 profile
 	profile, err := s.resolveAffiliateProfileForOrder(order)
 	if err != nil {
 		return err
@@ -530,19 +537,8 @@ func (s *AffiliateService) HandleOrderPaid(orderID uint) error {
 	if strings.TrimSpace(profile.Status) != constants.AffiliateProfileStatusActive {
 		return nil
 	}
-	if order.UserID > 0 && profile.UserID == order.UserID {
-		return nil
-	}
 
-	commissionType := constants.AffiliateCommissionTypeOrder
-	existing, err := s.repo.GetCommissionByOrderAndProfile(order.ID, profile.ID, commissionType)
-	if err != nil {
-		return err
-	}
-	if existing != nil {
-		return nil
-	}
-
+	// 计算订单基础金额（原价）
 	baseAmount, err := s.calculateCommissionBaseAmount(order)
 	if err != nil {
 		return err
@@ -550,39 +546,124 @@ func (s *AffiliateService) HandleOrderPaid(orderID uint) error {
 	if baseAmount.LessThanOrEqual(decimal.Zero) {
 		return nil
 	}
-	rate := decimal.NewFromFloat(setting.CommissionRate).Round(2)
-	commissionAmount := baseAmount.Mul(rate).Div(decimal.NewFromInt(100)).Round(2)
-	if commissionAmount.LessThanOrEqual(decimal.Zero) {
+
+	// 查推广者的客户折扣配置，计算实付金额
+	var discount models.AffiliateDiscount
+	actualAmount := baseAmount
+	if err2 := models.DB.Where("user_id = ?", profile.UserID).First(&discount).Error; err2 == nil {
+		discountRate := decimal.NewFromFloat(discount.DiscountRate).Div(decimal.NewFromInt(100))
+		actualAmount = baseAmount.Mul(decimal.NewFromInt(1).Sub(discountRate)).Round(2)
+	}
+	if actualAmount.LessThanOrEqual(decimal.Zero) {
 		return nil
+	}
+
+	// 查推广者在其上级体系中的档位比例（current_rate）
+	var promoterLevel models.UserPromotionLevel
+	promoterRate := decimal.Zero
+	if err2 := models.DB.Where("user_id = ?", profile.UserID).First(&promoterLevel).Error; err2 == nil {
+		promoterRate = decimal.NewFromFloat(promoterLevel.CurrentRate).Round(2)
+	} else {
+		// 没有上级关系，查自己的 scheme my_rate 作为比例
+		var scheme models.AffiliateLevelScheme
+		if err3 := models.DB.Where("user_id = ?", profile.UserID).First(&scheme).Error; err3 == nil {
+			promoterRate = decimal.NewFromFloat(scheme.MyRate).Round(2)
+		}
 	}
 
 	paidAt := time.Now()
 	if order.PaidAt != nil {
 		paidAt = *order.PaidAt
 	}
-	status := constants.AffiliateCommissionStatusPendingConfirm
-	var confirmAt *time.Time
-	var availableAt *time.Time
-	if setting.ConfirmDays <= 0 {
-		status = constants.AffiliateCommissionStatusAvailable
-		availableAt = &paidAt
-	} else {
-		t := paidAt.Add(time.Duration(setting.ConfirmDays) * 24 * time.Hour)
-		confirmAt = &t
+	confirmDays := setting.ConfirmDays
+
+	// 辅助函数：创建一条佣金记录
+	createCommission := func(affiliateProfileID uint, rate decimal.Decimal) error {
+		if rate.LessThanOrEqual(decimal.Zero) {
+			return nil
+		}
+		amount := actualAmount.Mul(rate).Div(decimal.NewFromInt(100)).Round(2)
+		if amount.LessThanOrEqual(decimal.Zero) {
+			return nil
+		}
+		// 幂等检查
+		existing, err2 := s.repo.GetCommissionByOrderAndProfile(order.ID, affiliateProfileID, constants.AffiliateCommissionTypeOrder)
+		if err2 != nil {
+			return err2
+		}
+		if existing != nil {
+			return nil
+		}
+		status := constants.AffiliateCommissionStatusPendingConfirm
+		var confirmAt *time.Time
+		var availableAt *time.Time
+		if confirmDays <= 0 {
+			status = constants.AffiliateCommissionStatusAvailable
+			availableAt = &paidAt
+		} else {
+			t := paidAt.Add(time.Duration(confirmDays) * 24 * time.Hour)
+			confirmAt = &t
+		}
+		c := &models.AffiliateCommission{
+			AffiliateProfileID: affiliateProfileID,
+			OrderID:            order.ID,
+			CommissionType:     constants.AffiliateCommissionTypeOrder,
+			BaseAmount:         models.NewMoneyFromDecimal(actualAmount),
+			RatePercent:        models.NewMoneyFromDecimal(rate),
+			CommissionAmount:   models.NewMoneyFromDecimal(amount),
+			Status:             status,
+			ConfirmAt:          confirmAt,
+			AvailableAt:        availableAt,
+		}
+		return s.repo.CreateCommission(c)
 	}
 
-	commission := &models.AffiliateCommission{
-		AffiliateProfileID: profile.ID,
-		OrderID:            order.ID,
-		CommissionType:     commissionType,
-		BaseAmount:         models.NewMoneyFromDecimal(baseAmount),
-		RatePercent:        models.NewMoneyFromDecimal(rate),
-		CommissionAmount:   models.NewMoneyFromDecimal(commissionAmount),
-		Status:             status,
-		ConfirmAt:          confirmAt,
-		AvailableAt:        availableAt,
+	// 1. 给直接推广者写佣金（按其档位比例）
+	if err := createCommission(profile.ID, promoterRate); err != nil {
+		return err
 	}
-	return s.repo.CreateCommission(commission)
+
+	// 2. 沿上级链逐级写差价佣金（最多10层防止死循环）
+	currentUserID := profile.UserID
+	currentRate := promoterRate
+	for i := 0; i < 10; i++ {
+		var level models.UserPromotionLevel
+		if err2 := models.DB.Where("user_id = ?", currentUserID).First(&level).Error; err2 != nil {
+			break // 没有上级，结束
+		}
+		if level.ParentUserID == 0 {
+			break
+		}
+
+		// 查上级的 profile
+		var parentProfile models.AffiliateProfile
+		if err2 := models.DB.Where("user_id = ?", level.ParentUserID).First(&parentProfile).Error; err2 != nil {
+			break
+		}
+		if strings.TrimSpace(parentProfile.Status) != constants.AffiliateProfileStatusActive {
+			break
+		}
+
+		// 上级的 my_rate（利润上限）
+		var parentScheme models.AffiliateLevelScheme
+		if err2 := models.DB.Where("user_id = ?", level.ParentUserID).First(&parentScheme).Error; err2 != nil {
+			break
+		}
+		parentMyRate := decimal.NewFromFloat(parentScheme.MyRate).Round(2)
+
+		// 差价 = 上级 my_rate - 当前层比例
+		diff := parentMyRate.Sub(currentRate).Round(2)
+		if diff.GreaterThan(decimal.Zero) {
+			if err := createCommission(parentProfile.ID, diff); err != nil {
+				return err
+			}
+		}
+
+		currentUserID = level.ParentUserID
+		currentRate = parentMyRate
+	}
+
+	return nil
 }
 
 // ConfirmDueCommissions 将到期佣金转可提现

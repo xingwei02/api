@@ -86,6 +86,7 @@ type Container struct {
 	DashboardService          *service.DashboardService
 	NotificationService       *service.NotificationService
 	AffiliateService          *service.AffiliateService
+	LevelUpgradeService       *service.AffiliateLevelUpgradeService
 	ZhengyeService            *service.ZhengyeService
 	ApiCredentialService      *service.ApiCredentialService
 	SiteConnectionService     *service.SiteConnectionService
@@ -307,5 +308,6 @@ func (c *Container) initServices() {
 	c.MediaService = service.NewMediaService(c.MediaRepo)
 	c.ProductMappingService.SetMediaService(c.MediaService)
 	c.AdProxyService = service.NewAdProxyService()
+	c.LevelUpgradeService = service.NewAffiliateLevelUpgradeService()
 	c.ZhengyeService = service.NewZhengyeService(models.DB)
 }

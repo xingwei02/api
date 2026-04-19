@@ -88,7 +88,9 @@ func (h *Handler) GetZhengyeRank(c *gin.Context) {
 		shared.RespondError(c, response.CodeInternal, "error.internal_error", nil)
 		return
 	}
-	data, err := h.ZhengyeService.GetRank()
+	// 封神榜不强制登录，未登录时 currentUserID=0（不显示"我的排名"）
+	uid, _ := shared.GetUserID(c)
+	data, err := h.ZhengyeService.GetRank(uid)
 	if err != nil {
 		shared.RespondError(c, response.CodeInternal, "error.internal_error", err)
 		return

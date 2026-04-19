@@ -21,6 +21,8 @@ const (
 	TaskNotificationDispatch = constants.TaskNotificationDispatch
 	// TaskAffiliateConfirmCommissions 佣金到期确认任务
 	TaskAffiliateConfirmCommissions = constants.TaskAffiliateConfirmCommissions
+	// TaskAffiliateLevelUpgradeCheck 伙伴等级升级检查任务
+	TaskAffiliateLevelUpgradeCheck = constants.TaskAffiliateLevelUpgradeCheck
 	// TaskUpstreamSyncStock 上游库存同步任务
 	TaskUpstreamSyncStock = constants.TaskUpstreamSyncStock
 	// TaskProcurementSubmit 采购提交任务
@@ -130,6 +132,11 @@ func NewNotificationInventoryAlertCheckTask() (*asynq.Task, error) {
 // NewAffiliateConfirmCommissionsTask 创建佣金到期确认任务
 func NewAffiliateConfirmCommissionsTask() *asynq.Task {
 	return asynq.NewTask(TaskAffiliateConfirmCommissions, nil)
+}
+
+// NewAffiliateLevelUpgradeCheckTask 创建伙伴等级升级检查任务
+func NewAffiliateLevelUpgradeCheckTask() *asynq.Task {
+	return asynq.NewTask(TaskAffiliateLevelUpgradeCheck, nil)
 }
 
 // NewUpstreamSyncStockTask 创建上游库存同步任务
