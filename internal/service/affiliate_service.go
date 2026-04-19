@@ -228,10 +228,59 @@ func (s *AffiliateService) OpenAffiliate(userID uint) (*models.AffiliateProfile,
 }
 
 // OpenTokenMerchant 开通 Token 商身份，并尽量挂接邀请关系与默认方案。
+// 注意：Token 商开通是独立入口，不受推广返利总开关（setting.Enabled）限制。
 func (s *AffiliateService) OpenTokenMerchant(userID uint, inviterCode string) (*models.AffiliateProfile, error) {
-	profile, err := s.OpenAffiliate(userID)
+	if userID == 0 || s.repo == nil || s.userRepo == nil {
+		return nil, ErrNotFound
+	}
+	// 直接获取或创建 AffiliateProfile，不经过总开关检查
+	profile, err := s.repo.GetProfileByUserID(userID)
 	if err != nil {
 		return nil, err
+	}
+	if profile == nil {
+		// 用户不存在时先校验
+		u, err := s.userRepo.GetByID(userID)
+		if err != nil {
+			return nil, err
+		}
+		if u == nil {
+			return nil, ErrNotFound
+		}
+		if strings.TrimSpace(u.Status) == constants.UserStatusDisabled {
+			return nil, ErrUserDisabled
+		}
+		const maxRetry = 8
+		for i := 0; i < maxRetry; i++ {
+			code, genErr := generateAffiliateCode()
+			if genErr != nil {
+				return nil, genErr
+			}
+			p := &models.AffiliateProfile{
+				UserID:        userID,
+				AffiliateCode: code,
+				Status:        constants.AffiliateProfileStatusActive,
+			}
+			if err := s.repo.CreateProfile(p); err != nil {
+				if isUniqueViolation(err) {
+					continue
+				}
+				return nil, err
+			}
+			created, err := s.repo.GetProfileByID(p.ID)
+			if err != nil {
+				return nil, err
+			}
+			if created != nil {
+				profile = created
+			} else {
+				profile = p
+			}
+			break
+		}
+		if profile == nil {
+			return nil, ErrAffiliateCodeInvalid
+		}
 	}
 	if s.userRepo == nil {
 		return profile, nil
