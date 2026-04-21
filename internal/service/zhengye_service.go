@@ -47,23 +47,27 @@ func (s *ZhengyeService) EnsureTokenMerchant(userID uint) error {
 
 // ZhengyeDashboardDTO 首页概览数据
 type ZhengyeDashboardDTO struct {
-	AffiliateCode     string  `json:"affiliate_code"`
-	PromotionPath     string  `json:"promotion_path"`
-	TotalEarnings     string  `json:"total_earnings"`
-	TodayEarnings     string  `json:"today_earnings"`
-	PaidCommission    string  `json:"paid_commission"`
-	PendingCommission string  `json:"pending_commission"`
-	TotalSales        string  `json:"total_sales"`
-	TotalPartners     int64   `json:"total_partners"`
-	DirectPartners    int64   `json:"direct_partners"`
-	ActivePartners    int64   `json:"active_partners"`
-	TotalOrders       int64   `json:"total_orders"`
-	TodayOrders       int64   `json:"today_orders"`
-	MyRate            float64 `json:"my_rate"`
-	MaxCommissionRate float64 `json:"max_commission_rate"`
-	EntryRate         float64 `json:"entry_rate"`
-	UpgradeCondition  string  `json:"upgrade_condition"`
-	DiscountRate      float64 `json:"discount_rate"`
+	AffiliateCode      string  `json:"affiliate_code"`
+	PromotionPath      string  `json:"promotion_path"`
+	TotalEarnings      string  `json:"total_earnings"`
+	TodayEarnings      string  `json:"today_earnings"`
+	PaidCommission     string  `json:"paid_commission"`
+	PendingCommission  string  `json:"pending_commission"`
+	TotalSales         string  `json:"total_sales"`
+	TotalPartners      int64   `json:"total_partners"`
+	DirectPartners     int64   `json:"direct_partners"`
+	ActivePartners     int64   `json:"active_partners"`
+	TotalOrders        int64   `json:"total_orders"`
+	TodayOrders        int64   `json:"today_orders"`
+	MyRate             float64 `json:"my_rate"`
+	MaxCommissionRate  float64 `json:"max_commission_rate"`
+	EntryRate          float64 `json:"entry_rate"`
+	UpgradeCondition   string  `json:"upgrade_condition"`
+	DiscountRate       float64 `json:"discount_rate"`
+	ParentContactQQ    string  `json:"parent_contact_qq"`
+	ParentContactWX    string  `json:"parent_contact_wx"`
+	ParentContactOther string  `json:"parent_contact_other"`
+	ParentAnnouncement string  `json:"parent_announcement"`
 }
 
 // ZhengyeStatsPeriod 统计周期
@@ -583,10 +587,52 @@ func (s *ZhengyeService) GetDashboard(userID uint) (*ZhengyeDashboardDTO, error)
 	var scheme models.AffiliateLevelScheme
 	s.db.Where("user_id = ?", userID).First(&scheme)
 
-	// 升级条件文字
-	upgradeCondition := ""
-	if scheme.EntryRate > 0 {
-		upgradeCondition = fmt.Sprintf("入门档 %.0f%%，继续提升销售额可升级", scheme.EntryRate)
+	// 查询当前用户在上级体系中的档位信息
+	var myLevel models.UserPromotionLevel
+	var currentRate float64
+	var maxCommissionRate float64
+	var upgradeCondition string
+
+	if err := s.db.Where("user_id = ?", userID).First(&myLevel).Error; err == nil {
+		// 有上级，使用上级设置的等级体系
+		currentRate = myLevel.CurrentRate
+
+		// 查询上级设置的最高档位比例
+		var parentScheme models.AffiliateLevelScheme
+		if err2 := s.db.Where("user_id = ?", myLevel.ParentUserID).First(&parentScheme).Error; err2 == nil {
+			var maxLevelItem models.AffiliateLevelItem
+			if err3 := s.db.Where("scheme_id = ?", parentScheme.ID).Order("sort_order DESC, rate DESC").First(&maxLevelItem).Error; err3 == nil {
+				maxCommissionRate = maxLevelItem.Rate
+			}
+
+			// 查询下一档升级要求
+			var nextLevelItem models.AffiliateLevelItem
+			if err4 := s.db.Where("scheme_id = ? AND sort_order > ?", parentScheme.ID, myLevel.CurrentLevel).Order("sort_order ASC").First(&nextLevelItem).Error; err4 == nil {
+				// 有下一档
+				if nextLevelItem.UpgradeContinuousDays > 0 || nextLevelItem.UpgradeTargetAmount > 0 || nextLevelItem.UpgradeTargetOrders > 0 {
+					upgradeCondition = fmt.Sprintf("升级到 %s：", nextLevelItem.Name)
+					if nextLevelItem.UpgradeContinuousDays > 0 {
+						upgradeCondition += fmt.Sprintf("连续%d天", nextLevelItem.UpgradeContinuousDays)
+					}
+					if nextLevelItem.UpgradeTargetAmount > 0 {
+						upgradeCondition += fmt.Sprintf("日销%.0f元", nextLevelItem.UpgradeTargetAmount)
+					}
+					if nextLevelItem.UpgradeTargetOrders > 0 {
+						upgradeCondition += fmt.Sprintf("或%d单", nextLevelItem.UpgradeTargetOrders)
+					}
+				} else {
+					upgradeCondition = fmt.Sprintf("下一档：%s (%.0f%%)", nextLevelItem.Name, nextLevelItem.Rate)
+				}
+			} else {
+				// 已是最高档
+				upgradeCondition = "已是最高档位"
+			}
+		}
+	} else {
+		// 无上级，使用自己的 scheme
+		currentRate = scheme.MyRate
+		maxCommissionRate = scheme.MyRate
+		upgradeCondition = "无法升级（无上级）"
 	}
 
 	// 客户折扣率
@@ -596,27 +642,43 @@ func (s *ZhengyeService) GetDashboard(userID uint) (*ZhengyeDashboardDTO, error)
 		discountRate = discount.DiscountRate
 	}
 
+	// 查询上级联系方式
+	var parentContactQQ, parentContactWX, parentContactOther, parentAnnouncement string
+	if myLevel.ParentUserID > 0 {
+		var parentContact models.AffiliateContact
+		if err := s.db.Where("user_id = ?", myLevel.ParentUserID).First(&parentContact).Error; err == nil {
+			parentContactQQ = parentContact.QQ
+			parentContactWX = parentContact.Wechat
+			parentContactOther = parentContact.OtherContact
+			parentAnnouncement = parentContact.Announcement
+		}
+	}
+
 	// 推广链接路径
 	promotionPath := fmt.Sprintf("/?aff=%s", profile.AffiliateCode)
 
 	return &ZhengyeDashboardDTO{
-		AffiliateCode:     profile.AffiliateCode,
-		PromotionPath:     promotionPath,
-		TotalEarnings:     zhengyeFormatMoney(totalEarnings),
-		TodayEarnings:     zhengyeFormatMoney(todayEarnings),
-		PaidCommission:    zhengyeFormatMoney(paidCommission),
-		PendingCommission: zhengyeFormatMoney(pendingCommission),
-		TotalSales:        zhengyeFormatMoney(totalSales),
-		TotalPartners:     totalPartners,
-		DirectPartners:    directPartners,
-		ActivePartners:    totalPartners,
-		TotalOrders:       totalOrders,
-		TodayOrders:       todayOrders,
-		MyRate:            scheme.MyRate,
-		MaxCommissionRate: scheme.MyRate,
-		EntryRate:         scheme.EntryRate,
-		UpgradeCondition:  upgradeCondition,
-		DiscountRate:      discountRate,
+		AffiliateCode:      profile.AffiliateCode,
+		PromotionPath:      promotionPath,
+		TotalEarnings:      zhengyeFormatMoney(totalEarnings),
+		TodayEarnings:      zhengyeFormatMoney(todayEarnings),
+		PaidCommission:     zhengyeFormatMoney(paidCommission),
+		PendingCommission:  zhengyeFormatMoney(pendingCommission),
+		TotalSales:         zhengyeFormatMoney(totalSales),
+		TotalPartners:      totalPartners,
+		DirectPartners:     directPartners,
+		ActivePartners:     totalPartners,
+		TotalOrders:        totalOrders,
+		TodayOrders:        todayOrders,
+		MyRate:             currentRate,
+		MaxCommissionRate:  maxCommissionRate,
+		EntryRate:          scheme.EntryRate,
+		UpgradeCondition:   upgradeCondition,
+		DiscountRate:       discountRate,
+		ParentContactQQ:    parentContactQQ,
+		ParentContactWX:    parentContactWX,
+		ParentContactOther: parentContactOther,
+		ParentAnnouncement: parentAnnouncement,
 	}, nil
 }
 
@@ -1553,4 +1615,192 @@ func maxInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P1：明细查看接口 DTO 定义
+// ─────────────────────────────────────────────────────────────────────────────
+
+// OrderDetailItem 订单明细条目
+type OrderDetailItem struct {
+	OrderID           uint   `json:"order_id"`
+	OrderNo           string `json:"order_no"`
+	ProductName       string `json:"product_name"`
+	OriginalAmount    string `json:"original_amount"`
+	FinalAmount       string `json:"final_amount"`
+	ChannelDiscount   string `json:"channel_discount"`
+	FinalChannel      string `json:"final_channel"`
+	PartnerCommission string `json:"partner_commission"`
+	MyCommission      string `json:"my_commission"`
+	ReferrerCost      string `json:"referrer_cost"`
+	Status            string `json:"status"`
+	IsSettled         bool   `json:"is_settled"`
+	IsSelf            bool   `json:"is_self"`
+	CreatedAt         string `json:"created_at"`
+}
+
+// OrderDetailFilter 订单明细筛选参数
+type OrderDetailFilter struct {
+	StartDate string
+	EndDate   string
+	Keyword   string
+	Page      int
+	PageSize  int
+}
+
+// OrderDetailListDTO 订单明细列表结果
+type OrderDetailListDTO struct {
+	Items    []OrderDetailItem `json:"items"`
+	Total    int64             `json:"total"`
+	Page     int               `json:"page"`
+	PageSize int               `json:"page_size"`
+}
+
+// OrderCommissionLayer 订单分佣层级
+type OrderCommissionLayer struct {
+	Level            int     `json:"level"`
+	UserID           uint    `json:"user_id"`
+	DisplayName      string  `json:"display_name"`
+	Role             string  `json:"role"`
+	CommissionRate   float64 `json:"commission_rate"`
+	CommissionAmount string  `json:"commission_amount"`
+	Status           string  `json:"status"`
+}
+
+// OrderCommissionDetailDTO 订单分佣明细
+type OrderCommissionDetailDTO struct {
+	OrderID         uint                   `json:"order_id"`
+	OrderNo         string                 `json:"order_no"`
+	ProductName     string                 `json:"product_name"`
+	OriginalAmount  string                 `json:"original_amount"`
+	FinalAmount     string                 `json:"final_amount"`
+	ChannelDiscount string                 `json:"channel_discount"`
+	FinalChannel    string                 `json:"final_channel"`
+	Status          string                 `json:"status"`
+	CreatedAt       string                 `json:"created_at"`
+	Layers          []OrderCommissionLayer `json:"layers"`
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P1：明细查看接口实现
+// ─────────────────────────────────────────────────────────────────────────────
+
+// GetPartnerSettlementOrders 获取指定伙伴的结算订单明细
+// 用于"下级结算→查看明细"展开层
+func (s *ZhengyeService) GetPartnerSettlementOrders(userID, partnerID uint, filter OrderDetailFilter) (*OrderDetailListDTO, error) {
+	// TODO: 权限校验 - 确保 partnerID 是 userID 的直属下级
+	var exists bool
+	if err := s.db.Model(&models.UserPromotionLevel{}).
+		Where("user_id = ? AND parent_user_id = ?", partnerID, userID).
+		Select("COUNT(*) > 0").Scan(&exists).Error; err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, fmt.Errorf("partner not found or not your direct subordinate")
+	}
+
+	// TODO: 查询该伙伴及其整个团队的订单
+	// 这里需要递归查询 partnerID 的整个下级网络的订单
+	// 由于涉及复杂的递归查询和分佣计算，暂时返回示例结构
+
+	// 构建查询条件
+	query := s.db.Model(&models.AffiliateCommission{}).
+		Joins("LEFT JOIN orders ON orders.id = affiliate_commissions.order_id").
+		Joins("LEFT JOIN users ON users.id = affiliate_commissions.user_id")
+
+	// TODO: 添加网络过滤条件（partnerID 及其所有下级）
+	// TODO: 添加日期筛选
+	// TODO: 添加关键词搜索
+
+	var total int64
+	query.Count(&total)
+
+	// TODO: 分页查询
+	// TODO: 组装返回数据
+
+	return &OrderDetailListDTO{
+		Items:    []OrderDetailItem{},
+		Total:    total,
+		Page:     filter.Page,
+		PageSize: filter.PageSize,
+	}, nil
+}
+
+// GetPartnerOrdersByDate 获取指定伙伴按日期展开的订单明细
+// 用于"我的伙伴→查看明细"展开层
+func (s *ZhengyeService) GetPartnerOrdersByDate(userID, partnerID uint, filter OrderDetailFilter) (*OrderDetailListDTO, error) {
+	// TODO: 权限校验
+	var exists bool
+	if err := s.db.Model(&models.UserPromotionLevel{}).
+		Where("user_id = ? AND parent_user_id = ?", partnerID, userID).
+		Select("COUNT(*) > 0").Scan(&exists).Error; err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, fmt.Errorf("partner not found or not your direct subordinate")
+	}
+
+	// TODO: 查询该伙伴的订单（个人+团队）
+	// TODO: 按日期分组展示
+	// TODO: 区分自己成交和团队成交
+
+	return &OrderDetailListDTO{
+		Items:    []OrderDetailItem{},
+		Total:    0,
+		Page:     filter.Page,
+		PageSize: filter.PageSize,
+	}, nil
+}
+
+// GetOrderCommissionDetail 获取指定订单的分佣归属明细
+// 用于"订单记录→查看详情"弹层
+func (s *ZhengyeService) GetOrderCommissionDetail(userID, orderID uint) (*OrderCommissionDetailDTO, error) {
+	// TODO: 权限校验 - 确保该订单在当前用户的网络中
+
+	// TODO: 查询订单基本信息
+	var order models.Order
+	if err := s.db.First(&order, orderID).Error; err != nil {
+		return nil, err
+	}
+
+	// TODO: 查询该订单的所有分佣记录
+	var commissions []models.AffiliateCommission
+	if err := s.db.Where("order_id = ?", orderID).
+		Order("level ASC").
+		Find(&commissions).Error; err != nil {
+		return nil, err
+	}
+
+	// TODO: 组装分佣层级数据
+	// 注意：AffiliateCommission 模型没有 Level、UserID、CommissionRate 字段
+	// 需要通过 AffiliateProfileID 关联查询用户信息
+	// 需要设计分佣层级的存储方案
+	layers := make([]OrderCommissionLayer, 0)
+	for i, comm := range commissions {
+		// TODO: 通过 comm.AffiliateProfileID 查询用户信息
+		// TODO: 计算角色（直接成交/上级/上上级等）
+		// TODO: 确定分佣层级的存储和查询方案
+		layers = append(layers, OrderCommissionLayer{
+			Level:            i + 1,                                                      // TODO: 需要实际的层级字段
+			UserID:           0,                                                          // TODO: 需要从 AffiliateProfile 获取
+			DisplayName:      "",                                                         // TODO: 从用户表获取
+			Role:             "",                                                         // TODO: 计算角色
+			CommissionRate:   comm.RatePercent.InexactFloat64(),                          // 使用 RatePercent 字段
+			CommissionAmount: zhengyeFormatMoney(comm.CommissionAmount.InexactFloat64()), // Money 类型需要转换
+			Status:           comm.Status,
+		})
+	}
+
+	return &OrderCommissionDetailDTO{
+		OrderID:         order.ID,
+		OrderNo:         order.OrderNo,
+		ProductName:     "",                                                        // TODO: 从订单详情获取
+		OriginalAmount:  zhengyeFormatMoney(order.OriginalAmount.InexactFloat64()), // 使用 OriginalAmount
+		FinalAmount:     zhengyeFormatMoney(order.TotalAmount.InexactFloat64()),    // 使用 TotalAmount
+		ChannelDiscount: "",                                                        // TODO: 计算渠道让利
+		FinalChannel:    "",                                                        // TODO: 获取最终成交渠道
+		Status:          order.Status,
+		CreatedAt:       order.CreatedAt.Format("2006-01-02 15:04:05"),
+		Layers:          layers,
+	}, nil
 }

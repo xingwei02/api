@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 
 	"github.com/dujiao-next/internal/http/handlers/shared"
 	"github.com/dujiao-next/internal/http/response"
@@ -406,6 +407,187 @@ func (h *Handler) GetZhengyeDiscount(c *gin.Context) {
 		return
 	}
 	response.Success(c, discount)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Settlement - 余额与提现（新增）
+// ─────────────────────────────────────────────────────────────────────────────
+
+// GetZhengyeBalance GET /affiliate/balance
+func (h *Handler) GetZhengyeBalance(c *gin.Context) {
+	uid, ok := shared.GetUserID(c)
+	if !ok {
+		return
+	}
+	if !h.ensureZhengyeAccess(c, uid) {
+		return
+	}
+	if h.SettlementService == nil {
+		shared.RespondError(c, response.CodeInternal, "error.internal_error", nil)
+		return
+	}
+	balance, err := h.SettlementService.GetUserBalance(uid)
+	if err != nil {
+		shared.RespondError(c, response.CodeInternal, "error.internal_error", err)
+		return
+	}
+	response.Success(c, balance)
+}
+
+// GetZhengyeBalanceLogs GET /affiliate/balance-logs?page=1&page_size=20
+func (h *Handler) GetZhengyeBalanceLogs(c *gin.Context) {
+	uid, ok := shared.GetUserID(c)
+	if !ok {
+		return
+	}
+	if !h.ensureZhengyeAccess(c, uid) {
+		return
+	}
+	if h.SettlementService == nil {
+		shared.RespondError(c, response.CodeInternal, "error.internal_error", nil)
+		return
+	}
+	page := queryIntDefault(c, "page", 1)
+	pageSize := queryIntDefault(c, "page_size", 20)
+	logs, total, err := h.SettlementService.GetBalanceLogs(uid, page, pageSize)
+	if err != nil {
+		shared.RespondError(c, response.CodeInternal, "error.internal_error", err)
+		return
+	}
+	response.Success(c, gin.H{"items": logs, "total": total, "page": page, "page_size": pageSize})
+}
+
+type transferCommissionRequest struct {
+	CommissionIDs []uint  `json:"commission_ids" binding:"required"`
+	Amount        float64 `json:"amount" binding:"required,min=1"`
+	VerifyCode    string  `json:"verify_code"`
+}
+
+// TransferCommissionToBalance POST /affiliate/transfer
+// 红线1：Handler层接收float64后立即转decimal
+func (h *Handler) TransferCommissionToBalance(c *gin.Context) {
+	uid, ok := shared.GetUserID(c)
+	if !ok {
+		return
+	}
+	if !h.ensureZhengyeAccess(c, uid) {
+		return
+	}
+	if h.SettlementService == nil {
+		shared.RespondError(c, response.CodeInternal, "error.internal_error", nil)
+		return
+	}
+	var req transferCommissionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		shared.RespondBindError(c, err)
+		return
+	}
+
+	// 红线1：立即转decimal验证
+	amount := decimal.NewFromFloat(req.Amount).RoundBank(2)
+	_ = amount // 验证通过，Service层会再次转换
+
+	// 获取用户邮箱
+	user, err := h.UserRepo.GetByID(uid)
+	if err != nil || user == nil {
+		shared.RespondError(c, response.CodeNotFound, "error.user_not_found", nil)
+		return
+	}
+
+	if err := h.SettlementService.TransferCommissionToBalance(uid, req.CommissionIDs, req.VerifyCode, user.Email, req.Amount); err != nil {
+		response.Error(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	response.Success(c, gin.H{"message": "佣金转入余额成功"})
+}
+
+type applyWithdrawRequest struct {
+	Amount        float64 `json:"amount" binding:"required,min=1"`
+	AlipayAccount string  `json:"alipay_account" binding:"required"`
+	RealName      string  `json:"real_name" binding:"required"`
+	VerifyCode    string  `json:"verify_code" binding:"required"`
+}
+
+// ApplyWithdraw POST /affiliate/withdraw
+// 红线1：Handler层接收float64后立即转decimal
+func (h *Handler) ApplyWithdraw(c *gin.Context) {
+	uid, ok := shared.GetUserID(c)
+	if !ok {
+		return
+	}
+	if !h.ensureZhengyeAccess(c, uid) {
+		return
+	}
+	if h.SettlementService == nil {
+		shared.RespondError(c, response.CodeInternal, "error.internal_error", nil)
+		return
+	}
+	var req applyWithdrawRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		shared.RespondBindError(c, err)
+		return
+	}
+
+	// 红线1：立即转decimal验证
+	amount := decimal.NewFromFloat(req.Amount).RoundBank(2)
+	_ = amount
+
+	// 获取用户邮箱
+	user, err := h.UserRepo.GetByID(uid)
+	if err != nil || user == nil {
+		shared.RespondError(c, response.CodeNotFound, "error.user_not_found", nil)
+		return
+	}
+
+	if err := h.SettlementService.ApplyWithdraw(uid, req.Amount, req.AlipayAccount, req.RealName, req.VerifyCode, user.Email); err != nil {
+		response.Error(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	response.Success(c, gin.H{"message": "提现申请已提交"})
+}
+
+// GetZhengyeWithdrawRequests GET /affiliate/withdraw-requests?page=1&page_size=20
+func (h *Handler) GetZhengyeWithdrawRequests(c *gin.Context) {
+	uid, ok := shared.GetUserID(c)
+	if !ok {
+		return
+	}
+	if !h.ensureZhengyeAccess(c, uid) {
+		return
+	}
+	if h.SettlementService == nil {
+		shared.RespondError(c, response.CodeInternal, "error.internal_error", nil)
+		return
+	}
+	page := queryIntDefault(c, "page", 1)
+	pageSize := queryIntDefault(c, "page_size", 20)
+	requests, total, err := h.SettlementService.GetWithdrawRequests(uid, page, pageSize)
+	if err != nil {
+		shared.RespondError(c, response.CodeInternal, "error.internal_error", err)
+		return
+	}
+	response.Success(c, gin.H{"items": requests, "total": total, "page": page, "page_size": pageSize})
+}
+
+// GetZhengyeWithdrawSettings GET /affiliate/withdraw-settings
+func (h *Handler) GetZhengyeWithdrawSettings(c *gin.Context) {
+	uid, ok := shared.GetUserID(c)
+	if !ok {
+		return
+	}
+	if !h.ensureZhengyeAccess(c, uid) {
+		return
+	}
+	if h.SettlementService == nil {
+		shared.RespondError(c, response.CodeInternal, "error.internal_error", nil)
+		return
+	}
+	settings, err := h.SettlementService.GetWithdrawSettings()
+	if err != nil {
+		shared.RespondError(c, response.CodeInternal, "error.internal_error", err)
+		return
+	}
+	response.Success(c, settings)
 }
 
 type saveDiscountRequest struct {

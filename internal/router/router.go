@@ -168,6 +168,13 @@ func SetupRouter(cfg *config.Config, c *provider.Container) *gin.Engine {
 			user.PUT("/affiliate/contact", publicHandler.SaveZhengyeContact)
 			user.GET("/affiliate/discount", publicHandler.GetZhengyeDiscount)
 			user.PUT("/affiliate/discount", publicHandler.SaveZhengyeDiscount)
+			// Settlement - 余额与提现（新增）
+			user.GET("/affiliate/balance", publicHandler.GetZhengyeBalance)
+			user.GET("/affiliate/balance-logs", publicHandler.GetZhengyeBalanceLogs)
+			user.POST("/affiliate/transfer", publicHandler.TransferCommissionToBalance)
+			user.POST("/affiliate/withdraw", publicHandler.ApplyWithdraw)
+			user.GET("/affiliate/withdraw-requests", publicHandler.GetZhengyeWithdrawRequests)
+			user.GET("/affiliate/withdraw-settings", publicHandler.GetZhengyeWithdrawSettings)
 			user.GET("/affiliate/commissions", publicHandler.ListAffiliateCommissions)
 			user.GET("/affiliate/withdraws", publicHandler.ListAffiliateWithdraws)
 			user.POST("/affiliate/withdraws", publicHandler.ApplyAffiliateWithdraw)
@@ -253,6 +260,13 @@ func SetupRouter(cfg *config.Config, c *provider.Container) *gin.Engine {
 			// 需要鉴权的接口
 			authorized := admin.Use(JWTAuthMiddleware(cfg.JWT.SecretKey, c.AdminRepo), AdminRBACMiddleware(c.AuthzService))
 			{
+				// 结算管理
+				authorized.GET("/settlement/withdraw-requests", adminHandler.GetAdminWithdrawRequests)
+				authorized.POST("/settlement/withdraw-reject/:id", adminHandler.RejectWithdraw)
+				authorized.POST("/settlement/withdraw-complete/:id", adminHandler.CompleteWithdraw)
+				authorized.GET("/settlement/settings", adminHandler.GetAdminWithdrawSettings)
+				authorized.PUT("/settlement/settings", adminHandler.UpdateAdminWithdrawSettings)
+
 				// 仪表盘
 				authorized.GET("/dashboard/overview", adminHandler.GetDashboardOverview)
 				authorized.GET("/dashboard/trends", adminHandler.GetDashboardTrends)

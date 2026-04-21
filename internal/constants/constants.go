@@ -253,11 +253,13 @@ const (
 
 // 验证码用途常量
 const (
-	VerifyPurposeRegister       = "register"
-	VerifyPurposeReset          = "reset"
-	VerifyPurposeTelegramBind   = "telegram_bind"
-	VerifyPurposeChangeEmailOld = "change_email_old"
-	VerifyPurposeChangeEmailNew = "change_email_new"
+	VerifyPurposeRegister           = "register"
+	VerifyPurposeReset              = "reset"
+	VerifyPurposeTelegramBind       = "telegram_bind"
+	VerifyPurposeChangeEmailOld     = "change_email_old"
+	VerifyPurposeChangeEmailNew     = "change_email_new"
+	VerifyPurposeWithdraw           = "withdraw"            // 提现验证码
+	VerifyPurposeCommissionTransfer = "commission_transfer" // 佣金转余额验证码
 )
 
 // 验证码提供方常量
