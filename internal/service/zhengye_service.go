@@ -50,6 +50,7 @@ func (s *ZhengyeService) EnsureTokenMerchant(userID uint) error {
 type ZhengyeDashboardDTO struct {
 	AffiliateCode      string  `json:"affiliate_code"`
 	PromotionPath      string  `json:"promotion_path"`
+	HasParent          bool    `json:"has_parent"`
 	TotalEarnings      string  `json:"total_earnings"`
 	TodayEarnings      string  `json:"today_earnings"`
 	PaidCommission     string  `json:"paid_commission"`
@@ -456,8 +457,8 @@ func (s *ZhengyeService) SaveLevels(userID uint, input SaveZhengyeLevelsInput) e
 		if item.Rate < 0 {
 			return fmt.Errorf("level rate cannot be negative")
 		}
-		if input.MyRate > 0 && item.Rate > input.MyRate {
-			return fmt.Errorf("level rate cannot exceed my_rate")
+		if input.MyRate > 0 && item.Rate >= input.MyRate {
+			return fmt.Errorf("level rate must be less than my_rate")
 		}
 		if item.IsEntry {
 			entryCount++
@@ -594,17 +595,27 @@ func (s *ZhengyeService) GetDashboard(userID uint) (*ZhengyeDashboardDTO, error)
 	var maxCommissionRate float64
 	var upgradeCondition string
 
+	hasParent := false
 	if err := s.db.Where("user_id = ?", userID).First(&myLevel).Error; err == nil {
+		hasParent = myLevel.ParentUserID > 0
 		// 有上级，使用上级设置的等级体系
 		currentRate = myLevel.CurrentRate
 
 		// 查询上级设置的最高档位比例
 		var parentScheme models.AffiliateLevelScheme
 		if err2 := s.db.Where("user_id = ?", myLevel.ParentUserID).First(&parentScheme).Error; err2 == nil {
+			entryRate := parentScheme.EntryRate
+			var entryLevelItem models.AffiliateLevelItem
+			if errEntry := s.db.Where("scheme_id = ? AND is_entry = ?", parentScheme.ID, true).Order("sort_order asc, id asc").First(&entryLevelItem).Error; errEntry == nil {
+				if entryLevelItem.Rate > 0 {
+					entryRate = entryLevelItem.Rate
+				}
+			}
 			var maxLevelItem models.AffiliateLevelItem
 			if err3 := s.db.Where("scheme_id = ?", parentScheme.ID).Order("sort_order DESC, rate DESC").First(&maxLevelItem).Error; err3 == nil {
 				maxCommissionRate = maxLevelItem.Rate
 			}
+			scheme.EntryRate = entryRate
 
 			// 查询下一档升级要求
 			var nextLevelItem models.AffiliateLevelItem
@@ -661,6 +672,7 @@ func (s *ZhengyeService) GetDashboard(userID uint) (*ZhengyeDashboardDTO, error)
 	return &ZhengyeDashboardDTO{
 		AffiliateCode:      profile.AffiliateCode,
 		PromotionPath:      promotionPath,
+		HasParent:          hasParent,
 		TotalEarnings:      zhengyeFormatMoney(totalEarnings),
 		TodayEarnings:      zhengyeFormatMoney(todayEarnings),
 		PaidCommission:     zhengyeFormatMoney(paidCommission),
