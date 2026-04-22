@@ -323,6 +323,11 @@ func (s *OrderService) createOrder(input orderCreateParams) (*models.Order, erro
 		return nil, ErrQueueUnavailable
 	}
 
+	result, err := s.buildOrderResult(input)
+	if err != nil {
+		return nil, err
+	}
+
 	// 风控检查（在锁库存之前）
 	if s.riskControlSvc != nil && !input.SkipRiskControl {
 		if err := s.riskControlSvc.CheckOrderAllowed(RiskCheckInput{
@@ -333,29 +338,6 @@ func (s *OrderService) createOrder(input orderCreateParams) (*models.Order, erro
 			SkipIPCheck: input.SkipIPRiskControl,
 		}); err != nil {
 			return nil, err
-		}
-	}
-
-	result, err := s.buildOrderResult(input)
-	if err != nil {
-		return nil, err
-	}
-
-	// 仅允许钱包余额支付时，在创建订单（锁库存）前预校验余额是否充足
-	if s.settingService != nil && s.settingService.GetWalletOnlyPayment() {
-		if input.UserID == 0 {
-			// 游客无钱包，wallet-only 模式下不允许下单
-			return nil, ErrWalletOnlyPaymentRequired
-		}
-		if s.walletService == nil {
-			return nil, ErrWalletOnlyPaymentRequired
-		}
-		account, accErr := s.walletService.GetAccount(input.UserID)
-		if accErr != nil {
-			return nil, ErrWalletOnlyPaymentRequired
-		}
-		if account.Balance.Decimal.LessThan(result.TotalAmount) {
-			return nil, ErrWalletInsufficientBalance
 		}
 	}
 

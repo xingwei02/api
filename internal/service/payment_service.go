@@ -211,15 +211,6 @@ func (s *PaymentService) CreatePayment(input CreatePaymentInput) (*CreatePayment
 	orderPaidByWallet := false
 	now := time.Now()
 
-	// 在事务外查询设置，避免 SQLite 单连接池下自锁
-	walletOnly := s.settingService != nil && s.settingService.GetWalletOnlyPayment()
-	if walletOnly {
-		input.UseBalance = true
-		if input.ChannelID != 0 {
-			return nil, ErrWalletOnlyPaymentRequired
-		}
-	}
-
 	err := s.paymentRepo.Transaction(func(tx *gorm.DB) error {
 		var lockedOrder models.Order
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
@@ -329,9 +320,6 @@ func (s *PaymentService) CreatePayment(input CreatePaymentInput) (*CreatePayment
 			return nil
 		}
 		if channel == nil {
-			if walletOnly {
-				return ErrWalletOnlyPaymentRequired
-			}
 			return ErrPaymentInvalid
 		}
 		if err := validatePaymentCurrencyForChannel(lockedOrder.Currency, channel); err != nil {
@@ -1041,10 +1029,6 @@ func (s *PaymentService) validateWalletRechargeChannel(channelID uint) error {
 
 // GetAllowedChannelsForProducts 获取商品允许的支付渠道列表
 func (s *PaymentService) GetAllowedChannelsForProducts(productIDs []uint) ([]models.PaymentChannel, error) {
-	// 仅钱包余额支付模式下不返回任何在线支付渠道
-	if s.settingService != nil && s.settingService.GetWalletOnlyPayment() {
-		return []models.PaymentChannel{}, nil
-	}
 	channels, _, err := s.ListChannels(repository.PaymentChannelListFilter{
 		Page:       1,
 		PageSize:   200,
