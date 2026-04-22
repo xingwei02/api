@@ -36,12 +36,17 @@ type Options struct {
 var L *zap.Logger
 
 var (
-	fallbackOnce sync.Once
-	fallbackLog  *zap.Logger
+	fallbackOnce  sync.Once
+	fallbackLog   *zap.Logger
+	closersMu     sync.Mutex
+	loggerClosers = map[*zap.Logger]func() error{}
 )
 
 // Init 初始化全局日志
 func Init(mode string, options Options) *zap.Logger {
+	if L != nil {
+		_ = Close(L)
+	}
 	L = New(mode, options)
 	if L == nil {
 		L = fallbackLogger()
@@ -74,7 +79,7 @@ func New(mode string, options Options) *zap.Logger {
 		return zap.New(core, zap.AddCaller(), zap.AddCallerSkip(1))
 	}
 
-	writeSyncer, err := newFileWriteSyncer(options)
+	writeSyncer, closer, err := newFileWriteSyncer(options)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "logger init failed, fallback to stdout: %v\n", err)
 		core := zapcore.NewCore(
@@ -90,7 +95,29 @@ func New(mode string, options Options) *zap.Logger {
 		writeSyncer,
 		level,
 	)
-	return zap.New(core, zap.AddCaller(), zap.AddCallerSkip(1))
+	logger := zap.New(core, zap.AddCaller(), zap.AddCallerSkip(1))
+	registerCloser(logger, closer)
+	return logger
+}
+
+// Close 释放 logger 关联的底层资源（如日志文件句柄）。
+func Close(logger *zap.Logger) error {
+	if logger == nil {
+		return nil
+	}
+	_ = logger.Sync()
+
+	closersMu.Lock()
+	closer, ok := loggerClosers[logger]
+	if ok {
+		delete(loggerClosers, logger)
+	}
+	closersMu.Unlock()
+
+	if ok && closer != nil {
+		return closer()
+	}
+	return nil
 }
 
 // StdLogger 返回兼容标准库 log 的 logger
@@ -158,10 +185,10 @@ func fallbackLogger() *zap.Logger {
 	return fallbackLog
 }
 
-func newFileWriteSyncer(options Options) (zapcore.WriteSyncer, error) {
+func newFileWriteSyncer(options Options) (zapcore.WriteSyncer, func() error, error) {
 	logFilePath, err := resolveLogFilePath(options)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	writer := &lumberjack.Logger{
@@ -176,7 +203,7 @@ func newFileWriteSyncer(options Options) (zapcore.WriteSyncer, error) {
 	} else {
 		writer.Compress = defaultLogCompress
 	}
-	return zapcore.AddSync(writer), nil
+	return zapcore.AddSync(writer), writer.Close, nil
 }
 
 func resolveLogFilePath(options Options) (string, error) {
@@ -222,4 +249,13 @@ func normalizePositiveInt(value int, fallback int) int {
 		return value
 	}
 	return fallback
+}
+
+func registerCloser(logger *zap.Logger, closer func() error) {
+	if logger == nil || closer == nil {
+		return
+	}
+	closersMu.Lock()
+	loggerClosers[logger] = closer
+	closersMu.Unlock()
 }

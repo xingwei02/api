@@ -14,6 +14,9 @@ func ensureManualStockRemainingMigration() error {
 	if DB == nil {
 		return errors.New("database is not initialized")
 	}
+	if err := ensureSettingsTableExists(); err != nil {
+		return err
+	}
 
 	var marker Setting
 	if err := DB.First(&marker, "key = ?", manualStockRemainingMigrationSettingKey).Error; err != nil {
@@ -88,6 +91,9 @@ func migrateCartSKUUniqueIndex() error {
 func ensureProductSKUMigration() error {
 	if DB == nil {
 		return errors.New("database is not initialized")
+	}
+	if err := ensureSettingsTableExists(); err != nil {
+		return err
 	}
 
 	// 检查迁移标记，已完成则跳过
@@ -328,6 +334,9 @@ func ensureCategoryParentMigration() error {
 	if DB == nil {
 		return errors.New("database is not initialized")
 	}
+	if err := ensureSettingsTableExists(); err != nil {
+		return err
+	}
 
 	var marker Setting
 	if err := DB.First(&marker, "key = ?", categoryParentMigrationSettingKey).Error; err != nil {
@@ -353,4 +362,14 @@ func ensureCategoryParentMigration() error {
 		},
 	}
 	return DB.Save(&doneMarker).Error
+}
+
+func ensureSettingsTableExists() error {
+	if DB == nil {
+		return errors.New("database is not initialized")
+	}
+	if DB.Migrator().HasTable(&Setting{}) {
+		return nil
+	}
+	return DB.AutoMigrate(&Setting{})
 }

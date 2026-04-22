@@ -131,7 +131,7 @@ func setupAffiliateServiceTest(t *testing.T) (*AffiliateService, *gorm.DB) {
 	if err != nil {
 		t.Fatalf("open sqlite failed: %v", err)
 	}
-	if err := db.AutoMigrate(&models.User{}, &models.AffiliateProfile{}, &models.AffiliateClick{}); err != nil {
+	if err := db.AutoMigrate(&models.User{}, &models.AffiliateProfile{}, &models.AffiliateClick{}, &models.UserBalance{}, &models.UserBalanceLog{}); err != nil {
 		t.Fatalf("auto migrate failed: %v", err)
 	}
 

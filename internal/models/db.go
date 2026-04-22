@@ -156,6 +156,10 @@ func AutoMigrate() error {
 		&AffiliateDiscount{},
 		&AffiliateRankConfig{},
 		&AffiliateSettlement{},
+		&OrderCommissionLayer{},
+		&UserBalance{},
+		&UserBalanceLog{},
+		&AffiliateWithdrawSettings{},
 	); err != nil {
 		return err
 	}

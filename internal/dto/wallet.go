@@ -58,7 +58,6 @@ type WalletRechargeResp struct {
 	RechargeNo    string       `json:"recharge_no"`
 	Amount        models.Money `json:"amount"`
 	PayableAmount models.Money `json:"payable_amount"`
-	FeeRate       models.Money `json:"fee_rate"`
 	FeeAmount     models.Money `json:"fee_amount"`
 	Currency      string       `json:"currency"`
 	Status        string       `json:"status"`
@@ -74,7 +73,6 @@ func NewWalletRechargeResp(r *models.WalletRechargeOrder) WalletRechargeResp {
 		RechargeNo:    r.RechargeNo,
 		Amount:        r.Amount,
 		PayableAmount: r.PayableAmount,
-		FeeRate:       r.FeeRate,
 		FeeAmount:     r.FeeAmount,
 		Currency:      r.Currency,
 		Status:        r.Status,

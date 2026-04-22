@@ -20,6 +20,20 @@ type SettlementService struct {
 	userAuthService *UserAuthService
 }
 
+// TransferableCommissionItem 可转余额佣金项
+type TransferableCommissionItem struct {
+	ID                   uint    `json:"id"`
+	OrderID              uint    `json:"order_id"`
+	OrderNo              string  `json:"order_no"`
+	ProductName          string  `json:"product_name"`
+	CommissionAmount     float64 `json:"commission_amount"`
+	Status               string  `json:"status"`
+	CanTransfer          bool    `json:"can_transfer"`
+	TransferredToBalance bool    `json:"transferred_to_balance"`
+	AvailableAt          string  `json:"available_at"`
+	CreatedAt            string  `json:"created_at"`
+}
+
 // NewSettlementService 创建结算服务
 func NewSettlementService(db *gorm.DB, userAuthService *UserAuthService) *SettlementService {
 	return &SettlementService{
@@ -85,6 +99,86 @@ func (s *SettlementService) GetBalanceLogs(userID uint, page, pageSize int) ([]m
 	return logs, total, err
 }
 
+// GetTransferableCommissions 获取可转余额佣金列表
+func (s *SettlementService) GetTransferableCommissions(userID uint, page, pageSize int) ([]TransferableCommissionItem, int64, error) {
+	var profile models.AffiliateProfile
+	if err := s.db.Where("user_id = ?", userID).First(&profile).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return []TransferableCommissionItem{}, 0, nil
+		}
+		return nil, 0, err
+	}
+
+	baseQuery := s.db.Model(&models.AffiliateCommission{}).
+		Where("affiliate_profile_id = ? AND status = ? AND transferred_to_balance = ?", profile.ID, constants.AffiliateCommissionStatusAvailable, false)
+
+	var total int64
+	if err := baseQuery.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	if total == 0 {
+		return []TransferableCommissionItem{}, 0, nil
+	}
+
+	type row struct {
+		ID                   uint
+		OrderID              uint
+		OrderNo              string
+		ProductName          string
+		CommissionAmount     float64
+		Status               string
+		TransferredToBalance bool
+		AvailableAt          *time.Time
+		CreatedAt            time.Time
+	}
+
+	var rows []row
+	offset := (page - 1) * pageSize
+	err := s.db.Table("affiliate_commissions ac").
+		Select(`
+			ac.id,
+			ac.order_id,
+			o.order_no,
+			COALESCE(o.product_snapshot_name, o.product_name, '') AS product_name,
+			ac.commission_amount,
+			ac.status,
+			ac.transferred_to_balance,
+			ac.available_at,
+			ac.created_at
+		`).
+		Joins("LEFT JOIN orders o ON o.id = ac.order_id").
+		Where("ac.affiliate_profile_id = ? AND ac.status = ? AND ac.transferred_to_balance = ?", profile.ID, constants.AffiliateCommissionStatusAvailable, false).
+		Order("ac.available_at ASC, ac.id DESC").
+		Offset(offset).
+		Limit(pageSize).
+		Scan(&rows).Error
+	if err != nil {
+		return nil, 0, err
+	}
+
+	items := make([]TransferableCommissionItem, 0, len(rows))
+	for _, item := range rows {
+		availableAt := ""
+		if item.AvailableAt != nil {
+			availableAt = item.AvailableAt.Format("2006-01-02 15:04:05")
+		}
+		items = append(items, TransferableCommissionItem{
+			ID:                   item.ID,
+			OrderID:              item.OrderID,
+			OrderNo:              item.OrderNo,
+			ProductName:          item.ProductName,
+			CommissionAmount:     item.CommissionAmount,
+			Status:               item.Status,
+			CanTransfer:          item.Status == constants.AffiliateCommissionStatusAvailable && !item.TransferredToBalance,
+			TransferredToBalance: item.TransferredToBalance,
+			AvailableAt:          availableAt,
+			CreatedAt:            item.CreatedAt.Format("2006-01-02 15:04:05"),
+		})
+	}
+
+	return items, total, nil
+}
+
 // TransferCommissionToBalance 佣金转余额（带邮箱验证码）
 // 红线1：金额处理必须用decimal.Decimal
 // 红线2：字段映射必须正确
@@ -107,7 +201,7 @@ func (s *SettlementService) TransferCommissionToBalance(userID uint, commissionI
 	// 2. 检查最小转账金额（1元）
 	minAmount := decimal.NewFromFloat(1.0)
 	if amount.LessThan(minAmount) {
-		return fmt.Errorf("转账金额不能低于%.2f元", minAmount)
+		return fmt.Errorf("转账金额不能低于%s元", minAmount.StringFixed(2))
 	}
 
 	// 3. 开启事务
@@ -133,7 +227,7 @@ func (s *SettlementService) TransferCommissionToBalance(userID uint, commissionI
 
 		// 6. 验证金额是否匹配
 		if !totalAmount.Equal(amount) {
-			return fmt.Errorf("佣金总额%.2f与请求金额%.2f不匹配", totalAmount, amount)
+			return fmt.Errorf("佣金总额%s与请求金额%s不匹配", totalAmount.StringFixed(2), amount.StringFixed(2))
 		}
 
 		// 7. 获取用户余额（带乐观锁）
@@ -231,7 +325,7 @@ func (s *SettlementService) ApplyWithdraw(userID uint, amountFloat float64, alip
 
 	// 3. 校验提现规则（红线1：decimal比较）
 	if settings.MinAmount.Decimal.GreaterThan(decimal.Zero) && amount.LessThan(settings.MinAmount.Decimal) {
-		return fmt.Errorf("提现金额不能低于%.2f元", settings.MinAmount.Decimal)
+		return fmt.Errorf("提现金额不能低于%s元", settings.MinAmount.Decimal.StringFixed(2))
 	}
 
 	// 4. 检查提现权限（红线2：RequireRealname）
@@ -335,7 +429,7 @@ func (s *SettlementService) ApplyWithdraw(userID uint, amountFloat float64, alip
 			Amount:        -amountFloat64,
 			BalanceBefore: balance.Balance,
 			BalanceAfter:  balance.Balance - amountFloat64,
-			Description:   fmt.Sprintf("提现申请，金额%.2f元", amount),
+			Description:   fmt.Sprintf("提现申请，金额%s元", amount.StringFixed(2)),
 			RelatedType:   "withdraw_request",
 			RelatedID:     &withdraw.ID,
 			CreatedAt:     now,
@@ -565,7 +659,7 @@ func (s *SettlementService) AdminCompleteWithdraw(withdrawID uint, adminID uint,
 			Amount:        0, // 已经在申请时扣除
 			BalanceBefore: balance.Balance,
 			BalanceAfter:  balance.Balance,
-			Description:   fmt.Sprintf("提现完成，实际到账%.2f元", withdraw.ActualAmount.Decimal),
+			Description:   fmt.Sprintf("提现完成，实际到账%s元", withdraw.ActualAmount.Decimal.StringFixed(2)),
 			RelatedType:   "withdraw_request",
 			RelatedID:     &withdrawID,
 			OperatorID:    &adminID,

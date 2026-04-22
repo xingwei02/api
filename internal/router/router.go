@@ -159,8 +159,10 @@ func SetupRouter(cfg *config.Config, c *provider.Container) *gin.Engine {
 			user.GET("/affiliate/levels", publicHandler.GetZhengyeLevels)
 			user.PUT("/affiliate/levels", publicHandler.SaveZhengyeLevels)
 			user.GET("/affiliate/orders", publicHandler.GetZhengyeOrders)
+			user.GET("/affiliate/orders/:id/commission-detail", publicHandler.GetZhengyeOrderCommissionDetail)
 			user.GET("/affiliate/team", publicHandler.GetZhengyeTeam)
 			user.GET("/affiliate/partners", publicHandler.GetZhengyePartners)
+			user.GET("/affiliate/partners/:id/orders", publicHandler.GetZhengyePartnerOrdersByDate)
 			user.PATCH("/affiliate/partners/:id", publicHandler.UpdateZhengyePartnerRate)
 			user.GET("/affiliate/settlement", publicHandler.GetZhengyeSettlement)
 			user.POST("/affiliate/settlement/pay", publicHandler.PayZhengyeSettlement)
@@ -171,6 +173,7 @@ func SetupRouter(cfg *config.Config, c *provider.Container) *gin.Engine {
 			// Settlement - 余额与提现（新增）
 			user.GET("/affiliate/balance", publicHandler.GetZhengyeBalance)
 			user.GET("/affiliate/balance-logs", publicHandler.GetZhengyeBalanceLogs)
+			user.GET("/affiliate/transferable-commissions", publicHandler.GetTransferableCommissions)
 			user.POST("/affiliate/transfer", publicHandler.TransferCommissionToBalance)
 			user.POST("/affiliate/withdraw", publicHandler.ApplyWithdraw)
 			user.GET("/affiliate/withdraw-requests", publicHandler.GetZhengyeWithdrawRequests)

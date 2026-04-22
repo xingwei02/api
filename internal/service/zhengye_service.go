@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/dujiao-next/internal/models"
@@ -1729,7 +1730,17 @@ func (s *ZhengyeService) GetPartnerSettlementOrders(userID, partnerID uint, filt
 // GetPartnerOrdersByDate 获取指定伙伴按日期展开的订单明细
 // 用于"我的伙伴→查看明细"展开层
 func (s *ZhengyeService) GetPartnerOrdersByDate(userID, partnerID uint, filter OrderDetailFilter) (*OrderDetailListDTO, error) {
-	// TODO: 权限校验
+	if s == nil || s.db == nil || userID == 0 || partnerID == 0 {
+		return nil, ErrNotFound
+	}
+	if filter.Page <= 0 {
+		filter.Page = 1
+	}
+	if filter.PageSize <= 0 || filter.PageSize > 100 {
+		filter.PageSize = 20
+	}
+
+	// 权限校验：partner 必须是当前用户的直属下级
 	var exists bool
 	if err := s.db.Model(&models.UserPromotionLevel{}).
 		Where("user_id = ? AND parent_user_id = ?", partnerID, userID).
@@ -1740,13 +1751,208 @@ func (s *ZhengyeService) GetPartnerOrdersByDate(userID, partnerID uint, filter O
 		return nil, fmt.Errorf("partner not found or not your direct subordinate")
 	}
 
-	// TODO: 查询该伙伴的订单（个人+团队）
-	// TODO: 按日期分组展示
-	// TODO: 区分自己成交和团队成交
+	// 伙伴本人 + 全下级网络
+	networkUserIDs := append([]uint{partnerID}, s.collectDescendantUserIDs(partnerID)...)
+	if len(networkUserIDs) == 0 {
+		return &OrderDetailListDTO{Items: []OrderDetailItem{}, Total: 0, Page: filter.Page, PageSize: filter.PageSize}, nil
+	}
+
+	var profiles []models.AffiliateProfile
+	if err := s.db.Where("user_id IN ?", networkUserIDs).Find(&profiles).Error; err != nil {
+		return nil, err
+	}
+	if len(profiles) == 0 {
+		return &OrderDetailListDTO{Items: []OrderDetailItem{}, Total: 0, Page: filter.Page, PageSize: filter.PageSize}, nil
+	}
+
+	profileIDs := make([]uint, 0, len(profiles))
+	profileToUserID := make(map[uint]uint, len(profiles))
+	partnerProfileID := uint(0)
+	for _, p := range profiles {
+		profileIDs = append(profileIDs, p.ID)
+		profileToUserID[p.ID] = p.UserID
+		if p.UserID == partnerID {
+			partnerProfileID = p.ID
+		}
+	}
+
+	var myProfile models.AffiliateProfile
+	_ = s.db.Where("user_id = ?", userID).First(&myProfile).Error
+
+	// 构建订单 ID 查询，避免因 join 佣金表导致重复订单
+	idQuery := s.db.Model(&models.Order{}).
+		Distinct("orders.id").
+		Where("orders.affiliate_profile_id IN ?", profileIDs)
+
+	// 日期过滤：只传 start_date 时，默认按当天；传 end_date 时按闭区间结束日处理
+	if filter.StartDate != "" {
+		startAt, err := time.Parse("2006-01-02", filter.StartDate)
+		if err != nil {
+			return nil, fmt.Errorf("invalid start_date")
+		}
+		idQuery = idQuery.Where("orders.created_at >= ?", startAt)
+
+		endDate := filter.EndDate
+		if endDate == "" {
+			endDate = filter.StartDate
+		}
+		endAt, err := time.Parse("2006-01-02", endDate)
+		if err != nil {
+			return nil, fmt.Errorf("invalid end_date")
+		}
+		idQuery = idQuery.Where("orders.created_at < ?", endAt.AddDate(0, 0, 1))
+	} else if filter.EndDate != "" {
+		endAt, err := time.Parse("2006-01-02", filter.EndDate)
+		if err != nil {
+			return nil, fmt.Errorf("invalid end_date")
+		}
+		idQuery = idQuery.Where("orders.created_at < ?", endAt.AddDate(0, 0, 1))
+	}
+
+	keyword := strings.TrimSpace(filter.Keyword)
+	if keyword != "" {
+		like := "%" + keyword + "%"
+		idQuery = idQuery.
+			Joins("LEFT JOIN order_items oi ON oi.order_id = orders.id").
+			Where("orders.order_no LIKE ? OR CAST(oi.title_json AS TEXT) LIKE ?", like, like)
+	}
+
+	var total int64
+	if err := idQuery.Count(&total).Error; err != nil {
+		return nil, err
+	}
+	if total == 0 {
+		return &OrderDetailListDTO{Items: []OrderDetailItem{}, Total: 0, Page: filter.Page, PageSize: filter.PageSize}, nil
+	}
+
+	var orderIDs []uint
+	if err := idQuery.Order("orders.created_at DESC").Offset((filter.Page-1)*filter.PageSize).Limit(filter.PageSize).Pluck("orders.id", &orderIDs).Error; err != nil {
+		return nil, err
+	}
+	if len(orderIDs) == 0 {
+		return &OrderDetailListDTO{Items: []OrderDetailItem{}, Total: total, Page: filter.Page, PageSize: filter.PageSize}, nil
+	}
+
+	var orders []models.Order
+	if err := s.db.Preload("Items").Where("id IN ?", orderIDs).Find(&orders).Error; err != nil {
+		return nil, err
+	}
+	orderMap := make(map[uint]models.Order, len(orders))
+	for _, o := range orders {
+		orderMap[o.ID] = o
+	}
+
+	// 查询订单涉及的佣金记录，用于组装伙伴佣金 / 我的佣金 / 其它上级成本
+	var commissions []models.AffiliateCommission
+	if err := s.db.Where("order_id IN ?", orderIDs).Find(&commissions).Error; err != nil {
+		return nil, err
+	}
+	commissionMap := make(map[uint][]models.AffiliateCommission)
+	for _, c := range commissions {
+		commissionMap[c.OrderID] = append(commissionMap[c.OrderID], c)
+	}
+
+	// 取直推渠道展示名
+	type profileNameRow struct {
+		ID          uint
+		DisplayName string
+		Code        string
+	}
+	var profileRows []profileNameRow
+	if err := s.db.Table("affiliate_profiles ap").
+		Select("ap.id, COALESCE(u.display_name, '') as display_name, ap.affiliate_code as code").
+		Joins("LEFT JOIN users u ON u.id = ap.user_id").
+		Where("ap.id IN ?", profileIDs).
+		Scan(&profileRows).Error; err != nil {
+		return nil, err
+	}
+	profileNameMap := make(map[uint]string, len(profileRows))
+	for _, row := range profileRows {
+		name := strings.TrimSpace(row.DisplayName)
+		if name == "" {
+			name = row.Code
+		}
+		profileNameMap[row.ID] = name
+	}
+
+	items := make([]OrderDetailItem, 0, len(orderIDs))
+	for _, orderID := range orderIDs {
+		order, ok := orderMap[orderID]
+		if !ok {
+			continue
+		}
+
+		productName := ""
+		if len(order.Items) > 0 {
+			titleJSON := order.Items[0].TitleJSON
+			if s, ok := titleJSON["zh-CN"].(string); ok && s != "" {
+				productName = s
+			} else if s, ok := titleJSON["en"].(string); ok && s != "" {
+				productName = s
+			} else {
+				productName = fmt.Sprintf("商品ID:%d", order.Items[0].ProductID)
+			}
+		}
+
+		partnerCommission := 0.0
+		myCommission := 0.0
+		referrerCost := 0.0
+		status := order.Status
+		isSettled := false
+
+		for _, c := range commissionMap[orderID] {
+			if order.AffiliateProfileID != nil && c.AffiliateProfileID == *order.AffiliateProfileID {
+				partnerCommission = c.CommissionAmount.InexactFloat64()
+				if c.Status == "available" || c.Status == "withdrawn" {
+					isSettled = true
+				}
+			}
+			if myProfile.ID > 0 && c.AffiliateProfileID == myProfile.ID {
+				myCommission = c.CommissionAmount.InexactFloat64()
+				status = c.Status
+				if c.Status == "available" || c.Status == "withdrawn" {
+					isSettled = true
+				}
+				continue
+			}
+
+			// 统计除直推渠道与当前用户之外的其它上级成本
+			if (order.AffiliateProfileID == nil || c.AffiliateProfileID != *order.AffiliateProfileID) && (myProfile.ID == 0 || c.AffiliateProfileID != myProfile.ID) {
+				referrerCost += c.CommissionAmount.InexactFloat64()
+			}
+		}
+
+		channelDiscount := order.OriginalAmount.Decimal.Sub(order.TotalAmount.Decimal).Round(2)
+		if channelDiscount.LessThan(decimal.Zero) {
+			channelDiscount = decimal.Zero
+		}
+
+		finalChannel := ""
+		if order.AffiliateProfileID != nil {
+			finalChannel = profileNameMap[*order.AffiliateProfileID]
+		}
+
+		items = append(items, OrderDetailItem{
+			OrderID:           order.ID,
+			OrderNo:           order.OrderNo,
+			ProductName:       productName,
+			OriginalAmount:    zhengyeFormatMoney(order.OriginalAmount.InexactFloat64()),
+			FinalAmount:       zhengyeFormatMoney(order.TotalAmount.InexactFloat64()),
+			ChannelDiscount:   zhengyeFormatMoney(channelDiscount.InexactFloat64()),
+			FinalChannel:      finalChannel,
+			PartnerCommission: zhengyeFormatMoney(partnerCommission),
+			MyCommission:      zhengyeFormatMoney(myCommission),
+			ReferrerCost:      zhengyeFormatMoney(referrerCost),
+			Status:            status,
+			IsSettled:         isSettled,
+			IsSelf:            order.AffiliateProfileID != nil && *order.AffiliateProfileID == partnerProfileID || (order.AffiliateProfileID != nil && profileToUserID[*order.AffiliateProfileID] == partnerID),
+			CreatedAt:         order.CreatedAt.Format("2006-01-02 15:04:05"),
+		})
+	}
 
 	return &OrderDetailListDTO{
-		Items:    []OrderDetailItem{},
-		Total:    0,
+		Items:    items,
+		Total:    total,
 		Page:     filter.Page,
 		PageSize: filter.PageSize,
 	}, nil
@@ -1755,50 +1961,92 @@ func (s *ZhengyeService) GetPartnerOrdersByDate(userID, partnerID uint, filter O
 // GetOrderCommissionDetail 获取指定订单的分佣归属明细
 // 用于"订单记录→查看详情"弹层
 func (s *ZhengyeService) GetOrderCommissionDetail(userID, orderID uint) (*OrderCommissionDetailDTO, error) {
-	// TODO: 权限校验 - 确保该订单在当前用户的网络中
+	if s == nil || s.db == nil || userID == 0 || orderID == 0 {
+		return nil, ErrNotFound
+	}
 
-	// TODO: 查询订单基本信息
+	// 权限校验：该订单必须在当前用户本人/下级网络的分佣链中
+	networkUserIDs := append([]uint{userID}, s.collectDescendantUserIDs(userID)...)
+	var accessible bool
+	if err := s.db.Model(&models.OrderCommissionLayer{}).
+		Where("order_id = ? AND user_id IN ?", orderID, networkUserIDs).
+		Select("COUNT(*) > 0").
+		Scan(&accessible).Error; err != nil {
+		return nil, err
+	}
+	if !accessible {
+		return nil, fmt.Errorf("order not found in your network")
+	}
+
 	var order models.Order
-	if err := s.db.First(&order, orderID).Error; err != nil {
+	if err := s.db.Preload("Items").First(&order, orderID).Error; err != nil {
 		return nil, err
 	}
 
-	// TODO: 查询该订单的所有分佣记录
-	var commissions []models.AffiliateCommission
-	if err := s.db.Where("order_id = ?", orderID).
-		Order("level ASC").
-		Find(&commissions).Error; err != nil {
+	// 查询订单分佣层级明细
+	type layerRow struct {
+		LayerNum    int
+		UserID      uint
+		DisplayName string
+		Role        string
+		Rate        float64
+		Amount      float64
+		Status      string
+		CreatedAt   time.Time
+	}
+	var rows []layerRow
+	if err := s.db.Table("order_commission_layers ocl").
+		Select(`
+			ocl.layer_num,
+			ocl.user_id,
+			COALESCE(u.display_name, '') as display_name,
+			ocl.role,
+			ocl.rate,
+			ocl.amount,
+			COALESCE(ac.status, '') as status,
+			ocl.created_at`).
+		Joins("LEFT JOIN users u ON u.id = ocl.user_id").
+		Joins("LEFT JOIN affiliate_commissions ac ON ac.id = ocl.commission_id").
+		Where("ocl.order_id = ?", orderID).
+		Order("ocl.layer_num ASC, ocl.id ASC").
+		Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 
-	// TODO: 组装分佣层级数据
-	// 注意：AffiliateCommission 模型没有 Level、UserID、CommissionRate 字段
-	// 需要通过 AffiliateProfileID 关联查询用户信息
-	// 需要设计分佣层级的存储方案
 	layers := make([]OrderCommissionLayer, 0)
-	for i, comm := range commissions {
-		// TODO: 通过 comm.AffiliateProfileID 查询用户信息
-		// TODO: 计算角色（直接成交/上级/上上级等）
-		// TODO: 确定分佣层级的存储和查询方案
+	for _, row := range rows {
 		layers = append(layers, OrderCommissionLayer{
-			Level:            i + 1,                                                      // TODO: 需要实际的层级字段
-			UserID:           0,                                                          // TODO: 需要从 AffiliateProfile 获取
-			DisplayName:      "",                                                         // TODO: 从用户表获取
-			Role:             "",                                                         // TODO: 计算角色
-			CommissionRate:   comm.RatePercent.InexactFloat64(),                          // 使用 RatePercent 字段
-			CommissionAmount: zhengyeFormatMoney(comm.CommissionAmount.InexactFloat64()), // Money 类型需要转换
-			Status:           comm.Status,
+			Level:            row.LayerNum,
+			UserID:           row.UserID,
+			DisplayName:      row.DisplayName,
+			Role:             row.Role,
+			CommissionRate:   row.Rate,
+			CommissionAmount: zhengyeFormatMoney(row.Amount),
+			Status:           row.Status,
 		})
+	}
+
+	productName := ""
+	if len(order.Items) > 0 {
+		productName = fmt.Sprintf("商品ID:%d", order.Items[0].ProductID)
+	}
+	channelDiscount := order.OriginalAmount.Decimal.Sub(order.TotalAmount.Decimal).Round(2)
+	if channelDiscount.LessThan(decimal.Zero) {
+		channelDiscount = decimal.Zero
+	}
+	finalChannel := ""
+	if len(layers) > 0 {
+		finalChannel = layers[0].DisplayName
 	}
 
 	return &OrderCommissionDetailDTO{
 		OrderID:         order.ID,
 		OrderNo:         order.OrderNo,
-		ProductName:     "",                                                        // TODO: 从订单详情获取
+		ProductName:     productName,
 		OriginalAmount:  zhengyeFormatMoney(order.OriginalAmount.InexactFloat64()), // 使用 OriginalAmount
 		FinalAmount:     zhengyeFormatMoney(order.TotalAmount.InexactFloat64()),    // 使用 TotalAmount
-		ChannelDiscount: "",                                                        // TODO: 计算渠道让利
-		FinalChannel:    "",                                                        // TODO: 获取最终成交渠道
+		ChannelDiscount: zhengyeFormatMoney(channelDiscount.InexactFloat64()),
+		FinalChannel:    finalChannel,
 		Status:          order.Status,
 		CreatedAt:       order.CreatedAt.Format("2006-01-02 15:04:05"),
 		Layers:          layers,

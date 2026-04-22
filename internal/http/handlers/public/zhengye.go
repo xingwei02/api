@@ -170,6 +170,28 @@ func (h *Handler) GetZhengyeOrders(c *gin.Context) {
 	response.Success(c, data)
 }
 
+// GetZhengyeOrderCommissionDetail GET /affiliate/orders/:id/commission-detail
+func (h *Handler) GetZhengyeOrderCommissionDetail(c *gin.Context) {
+	uid, ok := shared.GetUserID(c)
+	if !ok {
+		return
+	}
+	if !h.ensureZhengyeAccess(c, uid) {
+		return
+	}
+	orderID64, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil || orderID64 == 0 {
+		response.Error(c, http.StatusBadRequest, "invalid order id")
+		return
+	}
+	data, err := h.ZhengyeService.GetOrderCommissionDetail(uid, uint(orderID64))
+	if err != nil {
+		shared.RespondError(c, response.CodeInternal, "error.internal_error", err)
+		return
+	}
+	response.Success(c, data)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Team
 // ─────────────────────────────────────────────────────────────────────────────
@@ -262,6 +284,39 @@ func (h *Handler) UpdateZhengyePartnerRate(c *gin.Context) {
 		return
 	}
 	response.Success(c, gin.H{"partner_id": uint(partnerID64), "rate": req.Rate})
+}
+
+// GetZhengyePartnerOrdersByDate GET /affiliate/partners/:id/orders
+func (h *Handler) GetZhengyePartnerOrdersByDate(c *gin.Context) {
+	uid, ok := shared.GetUserID(c)
+	if !ok {
+		return
+	}
+	if !h.ensureZhengyeAccess(c, uid) {
+		return
+	}
+	if h.ZhengyeService == nil {
+		shared.RespondError(c, response.CodeInternal, "error.internal_error", nil)
+		return
+	}
+	partnerID64, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil || partnerID64 == 0 {
+		response.Error(c, http.StatusBadRequest, "invalid partner id")
+		return
+	}
+	filter := service.OrderDetailFilter{
+		StartDate: c.Query("start_date"),
+		EndDate:   c.Query("end_date"),
+		Keyword:   c.Query("keyword"),
+		Page:      queryIntDefault(c, "page", 1),
+		PageSize:  queryIntDefault(c, "page_size", 20),
+	}
+	data, err := h.ZhengyeService.GetPartnerOrdersByDate(uid, uint(partnerID64), filter)
+	if err != nil {
+		shared.RespondError(c, response.CodeInternal, "error.internal_error", err)
+		return
+	}
+	response.Success(c, data)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -455,6 +510,29 @@ func (h *Handler) GetZhengyeBalanceLogs(c *gin.Context) {
 		return
 	}
 	response.Success(c, gin.H{"items": logs, "total": total, "page": page, "page_size": pageSize})
+}
+
+// GetTransferableCommissions GET /affiliate/transferable-commissions?page=1&page_size=100
+func (h *Handler) GetTransferableCommissions(c *gin.Context) {
+	uid, ok := shared.GetUserID(c)
+	if !ok {
+		return
+	}
+	if !h.ensureZhengyeAccess(c, uid) {
+		return
+	}
+	if h.SettlementService == nil {
+		shared.RespondError(c, response.CodeInternal, "error.internal_error", nil)
+		return
+	}
+	page := queryIntDefault(c, "page", 1)
+	pageSize := queryIntDefault(c, "page_size", 100)
+	items, total, err := h.SettlementService.GetTransferableCommissions(uid, page, pageSize)
+	if err != nil {
+		shared.RespondError(c, response.CodeInternal, "error.internal_error", err)
+		return
+	}
+	response.Success(c, gin.H{"items": items, "total": total, "page": page, "page_size": pageSize})
 }
 
 type transferCommissionRequest struct {

@@ -10,6 +10,7 @@ type UserBalance struct {
 	UserID             uint      `gorm:"not null;uniqueIndex:uk_user_id" json:"user_id"`
 	AffiliateProfileID *uint     `gorm:"index:idx_affiliate_profile_id" json:"affiliate_profile_id,omitempty"` // 推广用户ID（仅Token商有值）
 	Balance            float64   `gorm:"type:decimal(20,2);not null;default:0;index" json:"balance"`
+	PendingBalance     float64   `gorm:"type:decimal(20,2);not null;default:0" json:"pending_balance"`
 	FrozenBalance      float64   `gorm:"type:decimal(20,2);not null;default:0" json:"frozen_balance"`
 	TotalIncome        float64   `gorm:"type:decimal(20,2);not null;default:0" json:"total_income"`
 	TotalWithdraw      float64   `gorm:"type:decimal(20,2);not null;default:0" json:"total_withdraw"`
@@ -47,10 +48,12 @@ func (UserBalanceLog) TableName() string {
 
 // BalanceLogType 余额明细类型常量
 const (
-	BalanceLogTypeCommissionTransfer = "commission_transfer" // 佣金转入
-	BalanceLogTypeWithdrawApply      = "withdraw_apply"      // 提现申请
-	BalanceLogTypeWithdrawReject     = "withdraw_reject"     // 提现驳回
-	BalanceLogTypeWithdrawComplete   = "withdraw_complete"   // 提现完成
-	BalanceLogTypeRefund             = "refund"              // 退款
-	BalanceLogTypeAdminAdjust        = "admin_adjust"        // 管理员调整
+	BalanceLogTypeCommissionPending   = "commission_pending"   // 佣金待结算（入待结算余额）
+	BalanceLogTypeCommissionAvailable = "commission_available" // 佣金转可用（待结算→可用）
+	BalanceLogTypeCommissionTransfer  = "commission_transfer"  // 佣金转入
+	BalanceLogTypeWithdrawApply       = "withdraw_apply"       // 提现申请
+	BalanceLogTypeWithdrawReject      = "withdraw_reject"      // 提现驳回
+	BalanceLogTypeWithdrawComplete    = "withdraw_complete"    // 提现完成
+	BalanceLogTypeRefund              = "refund"               // 退款
+	BalanceLogTypeAdminAdjust         = "admin_adjust"         // 管理员调整
 )

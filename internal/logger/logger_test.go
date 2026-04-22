@@ -52,6 +52,9 @@ func TestNewReleaseWritesToConfiguredFile(t *testing.T) {
 		Filename: "release.log",
 	}
 	log := New("release", cfg)
+	t.Cleanup(func() {
+		_ = Close(log)
+	})
 	log.Info("release-log-test")
 	_ = log.Sync()
 
@@ -71,6 +74,9 @@ func TestNewDebugDoesNotWriteFile(t *testing.T) {
 		Filename: "debug.log",
 	}
 	log := New("debug", cfg)
+	t.Cleanup(func() {
+		_ = Close(log)
+	})
 	log.Info("debug-log-test")
 	_ = log.Sync()
 
