@@ -376,6 +376,77 @@ func (s *ZhengyeService) listOrderFacts(profileIDs []uint, startAt *time.Time) (
 	return facts, nil
 }
 
+func (s *ZhengyeService) getNetworkUserIDs(userID uint, includeSelf bool) []uint {
+	if userID == 0 {
+		return []uint{}
+	}
+	ids := s.collectDescendantUserIDs(userID)
+	if includeSelf {
+		return append([]uint{userID}, ids...)
+	}
+	return ids
+}
+
+func (s *ZhengyeService) getProfileIDsByUserIDs(userIDs []uint) ([]uint, map[uint]uint, error) {
+	if s == nil || s.db == nil || len(userIDs) == 0 {
+		return []uint{}, map[uint]uint{}, nil
+	}
+	var profiles []models.AffiliateProfile
+	if err := s.db.Where("user_id IN ?", userIDs).Find(&profiles).Error; err != nil {
+		return nil, nil, err
+	}
+	profileIDs := make([]uint, 0, len(profiles))
+	profileToUserID := make(map[uint]uint, len(profiles))
+	for _, p := range profiles {
+		profileIDs = append(profileIDs, p.ID)
+		profileToUserID[p.ID] = p.UserID
+	}
+	return profileIDs, profileToUserID, nil
+}
+
+func (s *ZhengyeService) getNetworkProfileIDs(userID uint, includeSelf bool) ([]uint, map[uint]uint, error) {
+	userIDs := s.getNetworkUserIDs(userID, includeSelf)
+	return s.getProfileIDsByUserIDs(userIDs)
+}
+
+func subtractOrderSummary(total, part zhengyeOrderSummary) zhengyeOrderSummary {
+	result := zhengyeOrderSummary{
+		GrossSales:      total.GrossSales - part.GrossSales,
+		NetSales:        total.NetSales - part.NetSales,
+		RefundAmount:    total.RefundAmount - part.RefundAmount,
+		GrossSettlement: total.GrossSettlement - part.GrossSettlement,
+		NetSettlement:   total.NetSettlement - part.NetSettlement,
+		DistinctOrders:  total.DistinctOrders - part.DistinctOrders,
+		PendingOrders:   total.PendingOrders - part.PendingOrders,
+		SettledOrders:   total.SettledOrders - part.SettledOrders,
+	}
+	if result.GrossSales < 0 {
+		result.GrossSales = 0
+	}
+	if result.NetSales < 0 {
+		result.NetSales = 0
+	}
+	if result.RefundAmount < 0 {
+		result.RefundAmount = 0
+	}
+	if result.GrossSettlement < 0 {
+		result.GrossSettlement = 0
+	}
+	if result.NetSettlement < 0 {
+		result.NetSettlement = 0
+	}
+	if result.DistinctOrders < 0 {
+		result.DistinctOrders = 0
+	}
+	if result.PendingOrders < 0 {
+		result.PendingOrders = 0
+	}
+	if result.SettledOrders < 0 {
+		result.SettledOrders = 0
+	}
+	return result
+}
+
 func zhengyeSummarizeOrderFacts(facts []zhengyeOrderFact) zhengyeOrderSummary {
 	summary := zhengyeOrderSummary{}
 	if len(facts) == 0 {
@@ -844,16 +915,34 @@ func (s *ZhengyeService) GetStats(userID uint, period ZhengyeStatsPeriod) (*Zhen
 	startAt := time.Now().UTC().Truncate(24*time.Hour).AddDate(0, 0, -days+1)
 	todayStart := time.Now().UTC().Truncate(24 * time.Hour)
 
-	todayFacts, err := s.listOrderFacts([]uint{profile.ID}, &todayStart)
+	networkProfileIDs, _, err := s.getNetworkProfileIDs(userID, true)
 	if err != nil {
 		return nil, err
 	}
-	totalFacts, err := s.listOrderFacts([]uint{profile.ID}, nil)
+	if len(networkProfileIDs) == 0 {
+		networkProfileIDs = []uint{profile.ID}
+	}
+
+	todayFacts, err := s.listOrderFacts(networkProfileIDs, &todayStart)
+	if err != nil {
+		return nil, err
+	}
+	totalFacts, err := s.listOrderFacts(networkProfileIDs, nil)
+	if err != nil {
+		return nil, err
+	}
+	todaySelfFacts, err := s.listOrderFacts([]uint{profile.ID}, &todayStart)
+	if err != nil {
+		return nil, err
+	}
+	totalSelfFacts, err := s.listOrderFacts([]uint{profile.ID}, nil)
 	if err != nil {
 		return nil, err
 	}
 	todaySummary := zhengyeSummarizeOrderFacts(todayFacts)
 	totalSummary := zhengyeSummarizeOrderFacts(totalFacts)
+	todaySelfSummary := zhengyeSummarizeOrderFacts(todaySelfFacts)
+	totalSelfSummary := zhengyeSummarizeOrderFacts(totalSelfFacts)
 
 	// 趋势数据
 	type trendRow struct {
@@ -868,7 +957,7 @@ func (s *ZhengyeService) GetStats(userID uint, period ZhengyeStatsPeriod) (*Zhen
 		Select("DATE(ac.created_at) as day, COALESCE(SUM(ac.base_amount), 0) as net_sales, COALESCE(SUM(o.refunded_amount), 0) as refunds, COALESCE(SUM(ac.commission_amount), 0) as net_settle, COUNT(DISTINCT ac.order_id) as orders").
 		Table("affiliate_commissions ac").
 		Joins("LEFT JOIN orders o ON o.id = ac.order_id").
-		Where("ac.affiliate_profile_id = ? AND ac.commission_type = ? AND ac.created_at >= ?", profile.ID, constants.AffiliateCommissionTypeOrder, startAt).
+		Where("ac.affiliate_profile_id IN ? AND ac.commission_type = ? AND ac.created_at >= ?", networkProfileIDs, constants.AffiliateCommissionTypeOrder, startAt).
 		Group("DATE(created_at)").Order("day asc").Scan(&rows)
 
 	trend := make([]ZhengyeStatsTrendItem, 0, len(rows))
@@ -893,7 +982,7 @@ func (s *ZhengyeService) GetStats(userID uint, period ZhengyeStatsPeriod) (*Zhen
 
 	var totalCommission float64
 	s.db.Model(&models.AffiliateCommission{}).
-		Where("affiliate_profile_id = ? AND commission_type = ? AND status IN ?", profile.ID, constants.AffiliateCommissionTypeOrder, []string{"available", "withdrawn"}).
+		Where("affiliate_profile_id IN ? AND commission_type = ? AND status IN ?", networkProfileIDs, constants.AffiliateCommissionTypeOrder, []string{"available", "withdrawn"}).
 		Select("COALESCE(SUM(commission_amount), 0)").Scan(&totalCommission)
 
 	var totalChannels int64
@@ -904,12 +993,12 @@ func (s *ZhengyeService) GetStats(userID uint, period ZhengyeStatsPeriod) (*Zhen
 	// 已打款 / 待打款结算
 	var paidSettlement float64
 	s.db.Model(&models.AffiliateCommission{}).
-		Where("affiliate_profile_id = ? AND commission_type = ? AND status = ?", profile.ID, constants.AffiliateCommissionTypeOrder, "withdrawn").
+		Where("affiliate_profile_id IN ? AND commission_type = ? AND status = ?", networkProfileIDs, constants.AffiliateCommissionTypeOrder, "withdrawn").
 		Select("COALESCE(SUM(commission_amount), 0)").Scan(&paidSettlement)
 
 	var pendingSettlement float64
 	s.db.Model(&models.AffiliateCommission{}).
-		Where("affiliate_profile_id = ? AND commission_type = ? AND status = ?", profile.ID, constants.AffiliateCommissionTypeOrder, "available").
+		Where("affiliate_profile_id IN ? AND commission_type = ? AND status = ?", networkProfileIDs, constants.AffiliateCommissionTypeOrder, "available").
 		Select("COALESCE(SUM(commission_amount), 0)").Scan(&pendingSettlement)
 
 	// 当前佣金比例和折扣率
@@ -934,31 +1023,31 @@ func (s *ZhengyeService) GetStats(userID uint, period ZhengyeStatsPeriod) (*Zhen
 	return &ZhengyeStatsDTO{
 		Today: &ZhengyeStatsTodayDTO{
 			TotalSales:            zhengyeFormatMoney(todaySummary.GrossSales),
-			SelfSales:             zhengyeFormatMoney(todaySummary.GrossSales),
+			SelfSales:             zhengyeFormatMoney(todaySelfSummary.GrossSales),
 			NetSales:              zhengyeFormatMoney(todaySummary.NetSales),
-			SelfNetSales:          zhengyeFormatMoney(todaySummary.NetSales),
+			SelfNetSales:          zhengyeFormatMoney(todaySelfSummary.NetSales),
 			NetSettlement:         zhengyeFormatMoney(todaySummary.NetSettlement),
 			NetSettlementOriginal: zhengyeFormatMoney(todayGrossSettlement),
 			NetSettlementRefund:   zhengyeFormatMoney(todayGrossSettlement - todaySummary.NetSettlement),
 			NetworkOrders:         todaySummary.DistinctOrders,
-			SelfOrders:            todaySummary.DistinctOrders,
+			SelfOrders:            todaySelfSummary.DistinctOrders,
 			NewChannels:           todayNewChannels,
 			RefundAmount:          zhengyeFormatMoney(todaySummary.RefundAmount),
-			SelfRefund:            zhengyeFormatMoney(todaySummary.RefundAmount),
+			SelfRefund:            zhengyeFormatMoney(todaySelfSummary.RefundAmount),
 		},
 		Total: &ZhengyeStatsTotalDTO{
 			TotalSales:            zhengyeFormatMoney(totalSummary.GrossSales),
-			SelfSales:             zhengyeFormatMoney(totalSummary.GrossSales),
+			SelfSales:             zhengyeFormatMoney(totalSelfSummary.GrossSales),
 			NetSales:              zhengyeFormatMoney(totalSummary.NetSales),
-			SelfNetSales:          zhengyeFormatMoney(totalSummary.NetSales),
+			SelfNetSales:          zhengyeFormatMoney(totalSelfSummary.NetSales),
 			NetSettlement:         zhengyeFormatMoney(totalSummary.NetSettlement),
 			NetSettlementOriginal: zhengyeFormatMoney(totalGrossSettlement),
 			NetSettlementRefund:   zhengyeFormatMoney(totalGrossSettlement - totalSummary.NetSettlement),
 			NetworkOrders:         totalSummary.DistinctOrders,
-			SelfOrders:            totalSummary.DistinctOrders,
+			SelfOrders:            totalSelfSummary.DistinctOrders,
 			Channels:              totalChannels,
 			RefundAmount:          zhengyeFormatMoney(totalSummary.RefundAmount),
-			SelfRefund:            zhengyeFormatMoney(totalSummary.RefundAmount),
+			SelfRefund:            zhengyeFormatMoney(totalSelfSummary.RefundAmount),
 		},
 		EffectiveCommissionRate: currentRate,
 		CommissionRate:          currentRate,
@@ -983,80 +1072,139 @@ func (s *ZhengyeService) GetOrders(userID uint, filter ZhengyeOrdersFilter) (*Zh
 		filter.PageSize = 20
 	}
 
-	q := s.db.Model(&models.AffiliateCommission{}).
-		Where("affiliate_profile_id = ? AND commission_type = ?", profile.ID, constants.AffiliateCommissionTypeOrder)
-	if filter.Status != "" {
-		q = q.Where("status = ?", filter.Status)
+	networkProfileIDs, profileToUserID, err := s.getNetworkProfileIDs(userID, true)
+	if err != nil {
+		return nil, err
 	}
+	if len(networkProfileIDs) == 0 {
+		networkProfileIDs = []uint{profile.ID}
+		profileToUserID = map[uint]uint{profile.ID: userID}
+	}
+
+	idQuery := s.db.Model(&models.Order{}).
+		Distinct("orders.id").
+		Where("orders.affiliate_profile_id IN ?", networkProfileIDs)
 	if filter.DateFrom != "" {
-		q = q.Where("created_at >= ?", filter.DateFrom)
+		if startAt, err := time.Parse("2006-01-02", filter.DateFrom); err == nil {
+			idQuery = idQuery.Where("orders.created_at >= ?", startAt)
+		}
 	}
 	if filter.DateTo != "" {
-		q = q.Where("created_at <= ?", filter.DateTo)
+		if endAt, err := time.Parse("2006-01-02", filter.DateTo); err == nil {
+			idQuery = idQuery.Where("orders.created_at < ?", endAt.AddDate(0, 0, 1))
+		}
+	}
+	if filter.Status != "" {
+		idQuery = idQuery.Where("orders.status = ?", filter.Status)
 	}
 
 	var total int64
-	q.Count(&total)
+	if err := idQuery.Count(&total).Error; err != nil {
+		return nil, err
+	}
+	if total == 0 {
+		return &ZhengyeOrdersDTO{Items: []ZhengyeOrderItem{}, Total: 0, Page: filter.Page, PageSize: filter.PageSize}, nil
+	}
+
+	var orderIDs []uint
+	if err := idQuery.Order("orders.created_at desc").Offset((filter.Page-1)*filter.PageSize).Limit(filter.PageSize).Pluck("orders.id", &orderIDs).Error; err != nil {
+		return nil, err
+	}
+
+	var orders []models.Order
+	if err := s.db.Preload("Items").Where("id IN ?", orderIDs).Find(&orders).Error; err != nil {
+		return nil, err
+	}
+	orderMap := make(map[uint]models.Order, len(orders))
+	for _, order := range orders {
+		orderMap[order.ID] = order
+	}
 
 	var commissions []models.AffiliateCommission
-	q.Preload("Order.Items").Order("created_at desc").
-		Offset((filter.Page - 1) * filter.PageSize).Limit(filter.PageSize).Find(&commissions)
-
-	items := make([]ZhengyeOrderItem, 0, len(commissions))
+	if err := s.db.Where("order_id IN ?", orderIDs).Find(&commissions).Error; err != nil {
+		return nil, err
+	}
+	commissionMap := make(map[uint][]models.AffiliateCommission)
 	for _, c := range commissions {
-		orderNo := fmt.Sprintf("ORD%08d", c.OrderID)
-		productName := ""
-		channel := "我的直销"
-		partnerCommission := 0.0
-		referrerCost := 0.0
+		commissionMap[c.OrderID] = append(commissionMap[c.OrderID], c)
+	}
 
-		if c.Order.ID > 0 {
-			orderNo = c.Order.OrderNo
-			// 取第一个商品名称
-			if len(c.Order.Items) > 0 {
-				titleJSON := c.Order.Items[0].TitleJSON
-				if s, ok := titleJSON["zh-CN"].(string); ok && s != "" {
-					productName = s
-				} else if s, ok := titleJSON["en"].(string); ok && s != "" {
-					productName = s
-				}
+	type profileNameRow struct {
+		ID          uint
+		DisplayName string
+		Code        string
+	}
+	var profileRows []profileNameRow
+	if err := s.db.Table("affiliate_profiles ap").
+		Select("ap.id, COALESCE(u.display_name, '') as display_name, ap.affiliate_code as code").
+		Joins("LEFT JOIN users u ON u.id = ap.user_id").
+		Where("ap.id IN ?", networkProfileIDs).
+		Scan(&profileRows).Error; err != nil {
+		return nil, err
+	}
+	profileNameMap := make(map[uint]string, len(profileRows))
+	for _, row := range profileRows {
+		name := strings.TrimSpace(row.DisplayName)
+		if name == "" {
+			name = row.Code
+		}
+		profileNameMap[row.ID] = name
+	}
+
+	items := make([]ZhengyeOrderItem, 0, len(orderIDs))
+	for _, orderID := range orderIDs {
+		order, ok := orderMap[orderID]
+		if !ok {
+			continue
+		}
+		productName := ""
+		if len(order.Items) > 0 {
+			titleJSON := order.Items[0].TitleJSON
+			if s, ok := titleJSON["zh-CN"].(string); ok && s != "" {
+				productName = s
+			} else if s, ok := titleJSON["en"].(string); ok && s != "" {
+				productName = s
 			}
-			// 判断渠道：如果 affiliate_code 不是当前用户的，则为伙伴渠道
-			if c.Order.AffiliateCode != "" {
-				var ownerProfile models.AffiliateProfile
-				if err := s.db.Where("user_id = ? AND affiliate_code = ?", userID, c.Order.AffiliateCode).First(&ownerProfile).Error; err != nil {
+		}
+		channel := "我的直销"
+		if order.AffiliateProfileID != nil {
+			if profileToUserID[*order.AffiliateProfileID] != userID {
+				channel = profileNameMap[*order.AffiliateProfileID]
+				if channel == "" {
 					channel = "伙伴渠道"
 				}
 			}
+		}
 
-			if c.Order.AffiliateCode != "" {
-				var ownerProfile models.AffiliateProfile
-				if err := s.db.Where("affiliate_code = ?", c.Order.AffiliateCode).First(&ownerProfile).Error; err == nil && ownerProfile.UserID > 0 && ownerProfile.UserID != userID {
-					var partnerLevel models.UserPromotionLevel
-					if err := s.db.Where("user_id = ? AND parent_user_id = ?", ownerProfile.UserID, userID).First(&partnerLevel).Error; err == nil {
-						partnerCommission = c.BaseAmount.InexactFloat64() * partnerLevel.CurrentRate / 100
-						referrerCost = c.BaseAmount.InexactFloat64() - c.CommissionAmount.InexactFloat64() - partnerCommission
-					}
-				}
+		partnerCommission := 0.0
+		myCommission := 0.0
+		referrerCost := 0.0
+		status := order.Status
+		for _, c := range commissionMap[orderID] {
+			if order.AffiliateProfileID != nil && c.AffiliateProfileID == *order.AffiliateProfileID {
+				partnerCommission = c.CommissionAmount.InexactFloat64()
+			}
+			if c.AffiliateProfileID == profile.ID {
+				myCommission = c.CommissionAmount.InexactFloat64()
+				status = c.Status
+				continue
+			}
+			if (order.AffiliateProfileID == nil || c.AffiliateProfileID != *order.AffiliateProfileID) && c.AffiliateProfileID != profile.ID {
+				referrerCost += c.CommissionAmount.InexactFloat64()
 			}
 		}
 
-		amount := c.BaseAmount.InexactFloat64()
-		if c.Order.RefundedAmount.InexactFloat64() > 0 {
-			amount = c.BaseAmount.InexactFloat64()
-		}
-
 		items = append(items, ZhengyeOrderItem{
-			OrderID:           c.OrderID,
-			OrderNo:           orderNo,
+			OrderID:           order.ID,
+			OrderNo:           order.OrderNo,
 			Channel:           channel,
 			ProductName:       productName,
-			Amount:            zhengyeFormatMoney(amount),
-			Commission:        zhengyeFormatMoney(c.CommissionAmount.InexactFloat64()),
+			Amount:            zhengyeFormatMoney(order.TotalAmount.InexactFloat64()),
+			Commission:        zhengyeFormatMoney(myCommission),
 			PartnerCommission: zhengyeFormatMoney(partnerCommission),
 			ReferrerCost:      zhengyeFormatMoney(referrerCost),
-			Status:            c.Status,
-			CreatedAt:         c.CreatedAt.Format("2006-01-02 15:04:05"),
+			Status:            status,
+			CreatedAt:         order.CreatedAt.Format("2006-01-02 15:04:05"),
 		})
 	}
 
@@ -1646,11 +1794,24 @@ func (s *ZhengyeService) GetSettlement(userID uint, filter ZhengyeSettlementFilt
 			}
 		}
 
-		facts, err := s.listOrderFacts([]uint{profile.ID}, &startAt)
+		networkProfileIDs, _, err := s.getNetworkProfileIDs(p.UserID, true)
+		if err != nil {
+			return nil, err
+		}
+		if len(networkProfileIDs) == 0 {
+			networkProfileIDs = []uint{profile.ID}
+		}
+		facts, err := s.listOrderFacts(networkProfileIDs, &startAt)
+		if err != nil {
+			return nil, err
+		}
+		selfFacts, err := s.listOrderFacts([]uint{profile.ID}, &startAt)
 		if err != nil {
 			return nil, err
 		}
 		factSummary := zhengyeSummarizeOrderFacts(facts)
+		selfSummary := zhengyeSummarizeOrderFacts(selfFacts)
+		teamSummary := subtractOrderSummary(factSummary, selfSummary)
 		var directPartners int64
 		s.db.Model(&models.UserPromotionLevel{}).Where("parent_user_id = ?", p.UserID).Count(&directPartners)
 		totalPartners := s.countNetworkPartners(p.UserID)
@@ -1668,11 +1829,11 @@ func (s *ZhengyeService) GetSettlement(userID uint, filter ZhengyeSettlementFilt
 			OriginalSettle: zhengyeFormatMoney(originalSettlement),
 			RefundDeduct:   zhengyeFormatMoney(refundDeduction),
 			NetSettlement:  zhengyeFormatMoney(factSummary.NetSettlement),
-			SelfSales:      zhengyeFormatMoney(factSummary.GrossSales),
-			TeamSales:      zhengyeFormatMoney(factSummary.GrossSales),
+			SelfSales:      zhengyeFormatMoney(selfSummary.GrossSales),
+			TeamSales:      zhengyeFormatMoney(teamSummary.GrossSales),
 			TotalSales:     zhengyeFormatMoney(factSummary.GrossSales),
-			SelfOrders:     factSummary.DistinctOrders,
-			TeamOrders:     factSummary.DistinctOrders,
+			SelfOrders:     selfSummary.DistinctOrders,
+			TeamOrders:     teamSummary.DistinctOrders,
 			SettledOrders:  factSummary.SettledOrders,
 			PendingOrders:  factSummary.PendingOrders,
 			DirectPartners: directPartners,
@@ -1682,7 +1843,7 @@ func (s *ZhengyeService) GetSettlement(userID uint, filter ZhengyeSettlementFilt
 		}
 		items = append(items, item)
 		summary.DirectNodes++
-		summary.Orders += item.TeamOrders
+		summary.Orders += item.SelfOrders + item.TeamOrders
 		summary.TotalSales = zhengyeFormatMoney(parseMoney(summary.TotalSales) + factSummary.GrossSales)
 		summary.RefundAmount = zhengyeFormatMoney(parseMoney(summary.RefundAmount) + factSummary.RefundAmount)
 		summary.NetSales = zhengyeFormatMoney(parseMoney(summary.NetSales) + factSummary.NetSales)
@@ -1852,42 +2013,7 @@ type OrderCommissionDetailDTO struct {
 // GetPartnerSettlementOrders 获取指定伙伴的结算订单明细
 // 用于"下级结算→查看明细"展开层
 func (s *ZhengyeService) GetPartnerSettlementOrders(userID, partnerID uint, filter OrderDetailFilter) (*OrderDetailListDTO, error) {
-	// TODO: 权限校验 - 确保 partnerID 是 userID 的直属下级
-	var exists bool
-	if err := s.db.Model(&models.UserPromotionLevel{}).
-		Where("user_id = ? AND parent_user_id = ?", partnerID, userID).
-		Select("COUNT(*) > 0").Scan(&exists).Error; err != nil {
-		return nil, err
-	}
-	if !exists {
-		return nil, fmt.Errorf("partner not found or not your direct subordinate")
-	}
-
-	// TODO: 查询该伙伴及其整个团队的订单
-	// 这里需要递归查询 partnerID 的整个下级网络的订单
-	// 由于涉及复杂的递归查询和分佣计算，暂时返回示例结构
-
-	// 构建查询条件
-	query := s.db.Model(&models.AffiliateCommission{}).
-		Joins("LEFT JOIN orders ON orders.id = affiliate_commissions.order_id").
-		Joins("LEFT JOIN users ON users.id = affiliate_commissions.user_id")
-
-	// TODO: 添加网络过滤条件（partnerID 及其所有下级）
-	// TODO: 添加日期筛选
-	// TODO: 添加关键词搜索
-
-	var total int64
-	query.Count(&total)
-
-	// TODO: 分页查询
-	// TODO: 组装返回数据
-
-	return &OrderDetailListDTO{
-		Items:    []OrderDetailItem{},
-		Total:    total,
-		Page:     filter.Page,
-		PageSize: filter.PageSize,
-	}, nil
+	return s.GetPartnerOrdersByDate(userID, partnerID, filter)
 }
 
 // GetPartnerOrdersByDate 获取指定伙伴按日期展开的订单明细
