@@ -607,7 +607,8 @@ func (s *AffiliateService) HandleOrderPaid(orderID uint) error {
 			// 正常情况下应一致；这里以订单归因到的 profile 为准，避免脏数据导致层级错绑。
 			directNode.ProfileID = profile.ID
 		}
-		if directNode.Rate.LessThanOrEqual(decimal.Zero) {
+		hasAffiliateAttribution := order.AffiliateProfileID != nil && *order.AffiliateProfileID != 0
+		if !hasAffiliateAttribution && directNode.Rate.LessThanOrEqual(decimal.Zero) {
 			return nil
 		}
 		if topRate.LessThan(directNode.Rate) {
@@ -623,7 +624,11 @@ func (s *AffiliateService) HandleOrderPaid(orderID uint) error {
 			amount decimal.Decimal,
 			role string,
 		) error {
-			if amount.LessThanOrEqual(decimal.Zero) {
+			persistZeroDirect := hasAffiliateAttribution && role == models.CommissionRoleDirect
+			if amount.LessThan(decimal.Zero) {
+				return nil
+			}
+			if amount.Equal(decimal.Zero) && !persistZeroDirect {
 				return nil
 			}
 
@@ -673,6 +678,11 @@ func (s *AffiliateService) HandleOrderPaid(orderID uint) error {
 			}
 			if err := tx.Create(layer).Error; err != nil {
 				return err
+			}
+
+			if amount.LessThanOrEqual(decimal.Zero) {
+				layerNum++
+				return nil
 			}
 
 			if !hasUserBalanceLedgerTables(tx) {
