@@ -418,9 +418,6 @@ func (s *AffiliateService) ResolveOrderAffiliateSnapshot(userID uint, rawCode, r
 	if err != nil {
 		return nil, "", err
 	}
-	if !setting.Enabled {
-		return nil, "", nil
-	}
 
 	// visitor_key 优先（最近30天最后一次有效点击）
 	if visitorKey != "" {
@@ -430,6 +427,9 @@ func (s *AffiliateService) ResolveOrderAffiliateSnapshot(userID uint, rawCode, r
 		}
 		if profile != nil {
 			if userID != 0 && profile.UserID == userID {
+				return nil, "", nil
+			}
+			if !setting.Enabled && !s.isTokenMerchantUser(profile.UserID) {
 				return nil, "", nil
 			}
 			profileID := profile.ID
@@ -449,6 +449,9 @@ func (s *AffiliateService) ResolveOrderAffiliateSnapshot(userID uint, rawCode, r
 		return nil, "", nil
 	}
 	if userID != 0 && profile.UserID == userID {
+		return nil, "", nil
+	}
+	if !setting.Enabled && !s.isTokenMerchantUser(profile.UserID) {
 		return nil, "", nil
 	}
 
@@ -518,13 +521,6 @@ func (s *AffiliateService) HandleOrderPaid(orderID uint) error {
 	if orderID == 0 || s.repo == nil || s.orderRepo == nil {
 		return nil
 	}
-	setting, err := s.settingService.GetAffiliateSetting()
-	if err != nil {
-		return err
-	}
-	if !setting.Enabled {
-		return nil
-	}
 
 	order, err := s.orderRepo.GetByID(orderID)
 	if err != nil {
@@ -543,6 +539,14 @@ func (s *AffiliateService) HandleOrderPaid(orderID uint) error {
 		return nil
 	}
 	if strings.TrimSpace(profile.Status) != constants.AffiliateProfileStatusActive {
+		return nil
+	}
+
+	setting, err := s.settingService.GetAffiliateSetting()
+	if err != nil {
+		return err
+	}
+	if !setting.Enabled && !s.isTokenMerchantUser(profile.UserID) {
 		return nil
 	}
 
@@ -646,6 +650,11 @@ func (s *AffiliateService) HandleOrderPaid(orderID uint) error {
 			}
 			if err := tx.Create(layer).Error; err != nil {
 				return err
+			}
+
+			if !hasUserBalanceLedgerTables(tx) {
+				layerNum++
+				return nil
 			}
 
 			var ub models.UserBalance
@@ -895,7 +904,7 @@ func (s *AffiliateService) HandleOrderRefundedTx(
 		item.UpdatedAt = now
 
 		var profile models.AffiliateProfile
-		if err := tx.Select("id", "user_id").First(&profile, item.AffiliateProfileID).Error; err == nil && profile.UserID != 0 {
+		if hasUserBalanceLedgerTables(tx) && tx.Select("id", "user_id").First(&profile, item.AffiliateProfileID).Error == nil && profile.UserID != 0 {
 			pendingDeduct := deduct.InexactFloat64()
 			var balance models.UserBalance
 			if err := tx.Where("user_id = ?", profile.UserID).First(&balance).Error; err == nil {
@@ -943,6 +952,13 @@ func (s *AffiliateService) HandleOrderRefundedTx(
 		}
 	}
 	return nil
+}
+
+func hasUserBalanceLedgerTables(tx *gorm.DB) bool {
+	if tx == nil || tx.Migrator() == nil {
+		return false
+	}
+	return tx.Migrator().HasTable(&models.UserBalance{}) && tx.Migrator().HasTable(&models.UserBalanceLog{})
 }
 
 type affiliateCommissionChainNode struct {
@@ -1462,6 +1478,26 @@ func (s *AffiliateService) resolveAffiliateProfileForOrder(order *models.Order) 
 		return s.repo.GetProfileByCode(order.AffiliateCode)
 	}
 	return nil, nil
+}
+
+func (s *AffiliateService) isTokenMerchantUser(userID uint) bool {
+	if userID == 0 {
+		return false
+	}
+	if s.userRepo != nil {
+		user, err := s.userRepo.GetByID(userID)
+		if err == nil && user != nil {
+			return user.IsTokenMerchant
+		}
+	}
+	if models.DB == nil {
+		return false
+	}
+	var user models.User
+	if err := models.DB.Select("id", "is_token_merchant").First(&user, userID).Error; err != nil {
+		return false
+	}
+	return user.IsTokenMerchant
 }
 
 func (s *AffiliateService) calculateCommissionBaseAmount(order *models.Order) (decimal.Decimal, error) {
