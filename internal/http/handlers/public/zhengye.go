@@ -158,6 +158,8 @@ func (h *Handler) GetZhengyeOrders(c *gin.Context) {
 	filter := service.ZhengyeOrdersFilter{
 		Page:     queryIntDefault(c, "page", 1),
 		PageSize: queryIntDefault(c, "page_size", 20),
+		Keyword:  c.Query("keyword"),
+		Source:   c.Query("source"),
 		Status:   c.Query("status"),
 		DateFrom: c.Query("date_from"),
 		DateTo:   c.Query("date_to"),

@@ -152,6 +152,8 @@ type ZhengyeOrderItem struct {
 type ZhengyeOrdersFilter struct {
 	Page     int
 	PageSize int
+	Keyword  string
+	Source   string
 	Status   string
 	DateFrom string
 	DateTo   string
@@ -1084,6 +1086,12 @@ func (s *ZhengyeService) GetOrders(userID uint, filter ZhengyeOrdersFilter) (*Zh
 	idQuery := s.db.Model(&models.Order{}).
 		Distinct("orders.id").
 		Where("orders.affiliate_profile_id IN ?", networkProfileIDs)
+	if keyword := strings.TrimSpace(filter.Keyword); keyword != "" {
+		like := "%" + keyword + "%"
+		idQuery = idQuery.
+			Joins("LEFT JOIN order_items oi ON oi.order_id = orders.id").
+			Where("orders.order_no LIKE ? OR CAST(oi.title_json AS TEXT) LIKE ?", like, like)
+	}
 	if filter.DateFrom != "" {
 		if startAt, err := time.Parse("2006-01-02", filter.DateFrom); err == nil {
 			idQuery = idQuery.Where("orders.created_at >= ?", startAt)
@@ -1095,7 +1103,19 @@ func (s *ZhengyeService) GetOrders(userID uint, filter ZhengyeOrdersFilter) (*Zh
 		}
 	}
 	if filter.Status != "" {
-		idQuery = idQuery.Where("orders.status = ?", filter.Status)
+		if filter.Status == "仅看已退款" {
+			idQuery = idQuery.Where("orders.status LIKE ?", "%退款%")
+		} else {
+			idQuery = idQuery.Where("orders.status = ?", filter.Status)
+		}
+	}
+	if filter.Source != "" {
+		switch filter.Source {
+		case "我的直销":
+			idQuery = idQuery.Where("orders.affiliate_profile_id = ?", profile.ID)
+		case "伙伴渠道":
+			idQuery = idQuery.Where("orders.affiliate_profile_id <> ?", profile.ID)
+		}
 	}
 
 	var total int64
