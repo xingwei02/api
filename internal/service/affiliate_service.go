@@ -558,16 +558,10 @@ func (s *AffiliateService) HandleOrderPaid(orderID uint) error {
 	if profile == nil {
 		return nil
 	}
-	if strings.TrimSpace(profile.Status) != constants.AffiliateProfileStatusActive {
-		return nil
-	}
 
 	setting, err := s.settingService.GetAffiliateSetting()
 	if err != nil {
 		return err
-	}
-	if !setting.Enabled && !s.isTokenMerchantUser(profile.UserID) {
-		return nil
 	}
 
 	// ========== 核心修复：分佣基数用原价，不是实付 ==========
@@ -607,10 +601,6 @@ func (s *AffiliateService) HandleOrderPaid(orderID uint) error {
 			// 正常情况下应一致；这里以订单归因到的 profile 为准，避免脏数据导致层级错绑。
 			directNode.ProfileID = profile.ID
 		}
-		hasAffiliateAttribution := order.AffiliateProfileID != nil && *order.AffiliateProfileID != 0
-		if !hasAffiliateAttribution && directNode.Rate.LessThanOrEqual(decimal.Zero) {
-			return nil
-		}
 		if topRate.LessThan(directNode.Rate) {
 			topRate = directNode.Rate
 		}
@@ -624,7 +614,7 @@ func (s *AffiliateService) HandleOrderPaid(orderID uint) error {
 			amount decimal.Decimal,
 			role string,
 		) error {
-			persistZeroDirect := hasAffiliateAttribution && role == models.CommissionRoleDirect
+			persistZeroDirect := role == models.CommissionRoleDirect
 			if amount.LessThan(decimal.Zero) {
 				return nil
 			}
@@ -775,7 +765,7 @@ func (s *AffiliateService) HandleOrderPaid(orderID uint) error {
 		lastRate := chain[len(chain)-1].Rate
 		topDiff := topRate.Sub(lastRate).Round(2)
 		if topDiff.GreaterThan(decimal.Zero) {
-			topProfile, err := s.getActiveAffiliateProfileByUserID(tx, chain[len(chain)-1].UserID)
+			topProfile, err := s.getAffiliateProfileByUserID(tx, chain[len(chain)-1].UserID)
 			if err != nil {
 				return err
 			}
@@ -1103,7 +1093,7 @@ func (s *AffiliateService) getTopMerchantRate(tx *gorm.DB, userID uint) (decimal
 	return decimal.NewFromFloat(scheme.MyRate).Round(2), nil
 }
 
-func (s *AffiliateService) getActiveAffiliateProfileByUserID(tx *gorm.DB, userID uint) (*models.AffiliateProfile, error) {
+func (s *AffiliateService) getAffiliateProfileByUserID(tx *gorm.DB, userID uint) (*models.AffiliateProfile, error) {
 	if tx == nil || userID == 0 {
 		return nil, nil
 	}
@@ -1114,10 +1104,18 @@ func (s *AffiliateService) getActiveAffiliateProfileByUserID(tx *gorm.DB, userID
 		}
 		return nil, err
 	}
+	return &profile, nil
+}
+
+func (s *AffiliateService) getActiveAffiliateProfileByUserID(tx *gorm.DB, userID uint) (*models.AffiliateProfile, error) {
+	profile, err := s.getAffiliateProfileByUserID(tx, userID)
+	if err != nil || profile == nil {
+		return profile, err
+	}
 	if strings.TrimSpace(profile.Status) != constants.AffiliateProfileStatusActive {
 		return nil, nil
 	}
-	return &profile, nil
+	return profile, nil
 }
 
 // GetUserDashboard 获取用户返利中心数据
@@ -1530,7 +1528,7 @@ func (s *AffiliateService) resolveAffiliateProfileByPromotionRelation(tx *gorm.D
 	if level.ParentUserID == 0 {
 		return nil, nil
 	}
-	return s.getActiveAffiliateProfileByUserID(tx, level.ParentUserID)
+	return s.getAffiliateProfileByUserID(tx, level.ParentUserID)
 }
 
 func (s *AffiliateService) syncOrderAffiliateSnapshotTx(tx *gorm.DB, order *models.Order, profile *models.AffiliateProfile) error {
