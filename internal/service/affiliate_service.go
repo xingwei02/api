@@ -438,7 +438,7 @@ func (s *AffiliateService) ResolveOrderAffiliateSnapshot(userID uint, rawCode, r
 	}
 
 	if code == "" {
-		return nil, "", nil
+		return s.resolveAffiliateSnapshotFromPromotionRelation(setting, userID)
 	}
 
 	profile, err := s.repo.GetProfileByCode(code)
@@ -446,15 +446,35 @@ func (s *AffiliateService) ResolveOrderAffiliateSnapshot(userID uint, rawCode, r
 		return nil, "", err
 	}
 	if profile == nil || strings.TrimSpace(profile.Status) != constants.AffiliateProfileStatusActive {
-		return nil, "", nil
+		return s.resolveAffiliateSnapshotFromPromotionRelation(setting, userID)
 	}
 	if userID != 0 && profile.UserID == userID {
+		return s.resolveAffiliateSnapshotFromPromotionRelation(setting, userID)
+	}
+	if !setting.Enabled && !s.isTokenMerchantUser(profile.UserID) {
+		return s.resolveAffiliateSnapshotFromPromotionRelation(setting, userID)
+	}
+
+	profileID := profile.ID
+	return &profileID, profile.AffiliateCode, nil
+}
+
+func (s *AffiliateService) resolveAffiliateSnapshotFromPromotionRelation(setting AffiliateSetting, userID uint) (*uint, string, error) {
+	// 无点击/邀请码命中时，已建立上下级关系的注册用户仍应稳定归属到直属上级，
+	// 否则订单虽然存在，但不会进入推广统计与返佣事实链。
+	if userID == 0 || models.DB == nil {
+		return nil, "", nil
+	}
+	profile, err := s.resolveAffiliateProfileByPromotionRelation(models.DB, userID)
+	if err != nil {
+		return nil, "", err
+	}
+	if profile == nil {
 		return nil, "", nil
 	}
 	if !setting.Enabled && !s.isTokenMerchantUser(profile.UserID) {
 		return nil, "", nil
 	}
-
 	profileID := profile.ID
 	return &profileID, profile.AffiliateCode, nil
 }
@@ -571,6 +591,9 @@ func (s *AffiliateService) HandleOrderPaid(orderID uint) error {
 	// ========== 事务：写佣金记录 + 层级表 + 待结算余额 ==========
 	return s.repo.Transaction(func(tx *gorm.DB) error {
 		repoTx := s.repo.WithTx(tx)
+		if err := s.syncOrderAffiliateSnapshotTx(tx, order, profile); err != nil {
+			return err
+		}
 
 		chain, topRate, err := s.buildCommissionChain(tx, profile.UserID)
 		if err != nil {
@@ -1477,7 +1500,55 @@ func (s *AffiliateService) resolveAffiliateProfileForOrder(order *models.Order) 
 	if strings.TrimSpace(order.AffiliateCode) != "" {
 		return s.repo.GetProfileByCode(order.AffiliateCode)
 	}
+	if order.UserID != 0 && models.DB != nil {
+		return s.resolveAffiliateProfileByPromotionRelation(models.DB, order.UserID)
+	}
 	return nil, nil
+}
+
+func (s *AffiliateService) resolveAffiliateProfileByPromotionRelation(tx *gorm.DB, userID uint) (*models.AffiliateProfile, error) {
+	if tx == nil || userID == 0 {
+		return nil, nil
+	}
+	var level models.UserPromotionLevel
+	if err := tx.Select("parent_user_id").Where("user_id = ?", userID).First(&level).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if level.ParentUserID == 0 {
+		return nil, nil
+	}
+	return s.getActiveAffiliateProfileByUserID(tx, level.ParentUserID)
+}
+
+func (s *AffiliateService) syncOrderAffiliateSnapshotTx(tx *gorm.DB, order *models.Order, profile *models.AffiliateProfile) error {
+	if tx == nil || order == nil || order.ID == 0 || profile == nil || profile.ID == 0 {
+		return nil
+	}
+	needProfileID := order.AffiliateProfileID == nil || *order.AffiliateProfileID == 0
+	needCode := strings.TrimSpace(order.AffiliateCode) == ""
+	if !needProfileID && !needCode {
+		return nil
+	}
+	updates := map[string]interface{}{}
+	if needProfileID {
+		updates["affiliate_profile_id"] = profile.ID
+		order.AffiliateProfileID = &profile.ID
+	}
+	if needCode {
+		updates["affiliate_code"] = profile.AffiliateCode
+		order.AffiliateCode = profile.AffiliateCode
+	}
+	if len(updates) == 0 {
+		return nil
+	}
+	query := tx.Model(&models.Order{}).Where("id = ?", order.ID)
+	if order.ParentID == nil {
+		query = query.Or("parent_id = ?", order.ID)
+	}
+	return query.Updates(updates).Error
 }
 
 func (s *AffiliateService) isTokenMerchantUser(userID uint) bool {
