@@ -618,11 +618,22 @@ func (s *AffiliateService) HandleOrderPaid(orderID uint) error {
 
 		chain, topRate, err := s.buildCommissionChain(tx, profile.UserID)
 		if err != nil {
+			logger.Errorw("HandleOrderPaid_build_chain_failed", "order_id", order.ID, "profile_user_id", profile.UserID, "error", err)
 			return err
 		}
 		if len(chain) == 0 {
+			logger.Warnw("HandleOrderPaid_empty_chain", "order_id", order.ID, "profile_user_id", profile.UserID)
 			return nil
 		}
+		logger.Infow("HandleOrderPaid_chain_built",
+			"order_id", order.ID,
+			"chain_len", len(chain),
+			"top_rate", topRate.String(),
+			"direct_profile_id", chain[0].ProfileID,
+			"direct_rate", chain[0].Rate.String(),
+			"original_amount", originalAmount.String(),
+			"discount_amount", discountAmount.String(),
+		)
 		directNode := chain[0]
 		if directNode.ProfileID != profile.ID {
 			// 正常情况下应一致；这里以订单归因到的 profile 为准，避免脏数据导致层级错绑。

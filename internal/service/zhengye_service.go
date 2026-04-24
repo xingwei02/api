@@ -2274,8 +2274,10 @@ func (s *ZhengyeService) GetOrderCommissionDetail(userID, orderID uint) (*OrderC
 		return nil, ErrNotFound
 	}
 
-	// 权限校验：该订单必须在当前用户本人/下级网络的分佣链中
+	// 权限校验：该订单必须归属于当前用户本人/下级网络的推广档案
 	networkUserIDs := append([]uint{userID}, s.collectDescendantUserIDs(userID)...)
+
+	// 先查 order_commission_layers（如果有数据）
 	var accessible bool
 	if err := s.db.Model(&models.OrderCommissionLayer{}).
 		Where("order_id = ? AND user_id IN ?", orderID, networkUserIDs).
@@ -2283,6 +2285,25 @@ func (s *ZhengyeService) GetOrderCommissionDetail(userID, orderID uint) (*OrderC
 		Scan(&accessible).Error; err != nil {
 		return nil, err
 	}
+
+	// 如果 layers 表没有命中，回退到 orders.affiliate_profile_id 校验
+	if !accessible {
+		var networkProfileIDs []uint
+		if err := s.db.Model(&models.AffiliateProfile{}).
+			Where("user_id IN ?", networkUserIDs).
+			Pluck("id", &networkProfileIDs).Error; err != nil {
+			return nil, err
+		}
+		if len(networkProfileIDs) > 0 {
+			if err := s.db.Model(&models.Order{}).
+				Where("id = ? AND affiliate_profile_id IN ?", orderID, networkProfileIDs).
+				Select("COUNT(*) > 0").
+				Scan(&accessible).Error; err != nil {
+				return nil, err
+			}
+		}
+	}
+
 	if !accessible {
 		return nil, fmt.Errorf("order not found in your network")
 	}
