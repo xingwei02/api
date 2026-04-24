@@ -111,7 +111,7 @@ func (s *AffiliateService) BackfillMissingCommissions(input BackfillCommissionsI
 
 // fixSingleOrder 修复单个订单的推广归因并生成分佣
 func (s *AffiliateService) fixSingleOrder(orderID, parentProfileID uint, parentCode string) error {
-	return s.repo.Transaction(func(tx *gorm.DB) error {
+	if err := s.repo.Transaction(func(tx *gorm.DB) error {
 		// 1. 更新订单的推广归因
 		err := tx.Model(&models.Order{}).
 			Where("id = ?", orderID).
@@ -125,11 +125,18 @@ func (s *AffiliateService) fixSingleOrder(orderID, parentProfileID uint, parentC
 			return fmt.Errorf("更新订单归因失败: %w", err)
 		}
 
-		// 2. 触发分佣计算
-		// 注意：这里需要使用事务外的 service 实例
-		// 因为 HandleOrderPaid 内部会开启新事务
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+
+	// 2. 事务提交后，再触发分佣计算
+	// 注意：HandleOrderPaid 内部会自行开启事务，因此不能放在上面的事务闭包里执行。
+	if err := s.HandleOrderPaid(orderID); err != nil {
+		return fmt.Errorf("生成分佣失败: %w", err)
+	}
+
+	return nil
 }
 
 // BackfillCommissionsForOrder 为单个订单补偿分佣（事务外调用）
