@@ -1084,7 +1084,7 @@ func (s *ZhengyeService) GetOrders(userID uint, filter ZhengyeOrdersFilter) (*Zh
 	}
 
 	idQuery := s.db.Model(&models.Order{}).
-		Distinct("orders.id").
+		Distinct("orders.id, orders.created_at").
 		Where("orders.affiliate_profile_id IN ?", networkProfileIDs)
 	if keyword := strings.TrimSpace(filter.Keyword); keyword != "" {
 		like := "%" + keyword + "%"
@@ -2090,7 +2090,7 @@ func (s *ZhengyeService) GetPartnerOrdersByDate(userID, partnerID uint, filter O
 
 	// 构建订单 ID 查询，避免因 join 佣金表导致重复订单
 	idQuery := s.db.Model(&models.Order{}).
-		Distinct("orders.id").
+		Distinct("orders.id, orders.created_at").
 		Where("orders.affiliate_profile_id IN ?", profileIDs)
 
 	// 日期过滤：只传 start_date 时，默认按当天；传 end_date 时按闭区间结束日处理
