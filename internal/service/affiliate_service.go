@@ -13,6 +13,7 @@ import (
 
 	"github.com/dujiao-next/internal/cache"
 	"github.com/dujiao-next/internal/constants"
+	"github.com/dujiao-next/internal/logger"
 	"github.com/dujiao-next/internal/models"
 	"github.com/dujiao-next/internal/repository"
 	"github.com/shopspring/decimal"
@@ -539,34 +540,60 @@ func (s *AffiliateService) TrackClick(input AffiliateTrackClickInput) error {
 //  8. 同时写入 commission_layers 层级表 + user_balances 待结算余额
 func (s *AffiliateService) HandleOrderPaid(orderID uint) error {
 	if orderID == 0 || s.repo == nil || s.orderRepo == nil {
+		logger.Warnw("HandleOrderPaid_skip_nil_deps", "order_id", orderID, "repo_nil", s.repo == nil, "orderRepo_nil", s.orderRepo == nil)
 		return nil
 	}
 
 	order, err := s.orderRepo.GetByID(orderID)
 	if err != nil {
+		logger.Errorw("HandleOrderPaid_get_order_failed", "order_id", orderID, "error", err)
 		return err
 	}
 	if order == nil {
+		logger.Warnw("HandleOrderPaid_order_not_found", "order_id", orderID)
 		return nil
 	}
+
+	logger.Infow("HandleOrderPaid_start",
+		"order_id", orderID,
+		"order_no", order.OrderNo,
+		"status", order.Status,
+		"user_id", order.UserID,
+		"affiliate_profile_id", order.AffiliateProfileID,
+		"affiliate_code", order.AffiliateCode,
+		"original_amount", order.OriginalAmount.Decimal.String(),
+		"total_amount", order.TotalAmount.Decimal.String(),
+		"parent_id", order.ParentID,
+	)
 
 	// 找到直接推广者的 profile
 	profile, err := s.resolveAffiliateProfileForOrder(order)
 	if err != nil {
+		logger.Errorw("HandleOrderPaid_resolve_profile_failed", "order_id", orderID, "error", err)
 		return err
 	}
 	if profile == nil {
+		logger.Warnw("HandleOrderPaid_no_profile", "order_id", orderID, "affiliate_profile_id", order.AffiliateProfileID, "affiliate_code", order.AffiliateCode)
 		return nil
 	}
 
+	logger.Infow("HandleOrderPaid_profile_resolved",
+		"order_id", orderID,
+		"profile_id", profile.ID,
+		"profile_user_id", profile.UserID,
+		"profile_status", profile.Status,
+	)
+
 	setting, err := s.settingService.GetAffiliateSetting()
 	if err != nil {
+		logger.Errorw("HandleOrderPaid_get_setting_failed", "order_id", orderID, "error", err)
 		return err
 	}
 
 	// ========== 核心修复：分佣基数用原价，不是实付 ==========
 	originalAmount := order.OriginalAmount.Decimal.Round(2)
 	if originalAmount.LessThanOrEqual(decimal.Zero) {
+		logger.Warnw("HandleOrderPaid_zero_original_amount", "order_id", orderID, "original_amount", originalAmount.String())
 		return nil
 	}
 
