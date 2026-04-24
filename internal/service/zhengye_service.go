@@ -1083,43 +1083,41 @@ func (s *ZhengyeService) GetOrders(userID uint, filter ZhengyeOrdersFilter) (*Zh
 		profileToUserID = map[uint]uint{profile.ID: userID}
 	}
 
-	idQuery := s.db.Model(&models.Order{}).
-		Distinct("orders.id, orders.created_at").
-		Where("orders.affiliate_profile_id IN ?", networkProfileIDs)
+	baseQuery := s.db.Model(&models.Order{}).
+		Where("orders.affiliate_profile_id IN ?", networkProfileIDs).
+		Where("orders.parent_id IS NULL")
 	if keyword := strings.TrimSpace(filter.Keyword); keyword != "" {
 		like := "%" + keyword + "%"
-		idQuery = idQuery.
-			Joins("LEFT JOIN order_items oi ON oi.order_id = orders.id").
-			Where("orders.order_no LIKE ? OR CAST(oi.title_json AS TEXT) LIKE ?", like, like)
+		baseQuery = baseQuery.Where("orders.order_no ILIKE ? OR orders.id IN (SELECT oi.order_id FROM order_items oi WHERE CAST(oi.title_json AS TEXT) ILIKE ?)", like, like)
 	}
 	if filter.DateFrom != "" {
 		if startAt, err := time.Parse("2006-01-02", filter.DateFrom); err == nil {
-			idQuery = idQuery.Where("orders.created_at >= ?", startAt)
+			baseQuery = baseQuery.Where("orders.created_at >= ?", startAt)
 		}
 	}
 	if filter.DateTo != "" {
 		if endAt, err := time.Parse("2006-01-02", filter.DateTo); err == nil {
-			idQuery = idQuery.Where("orders.created_at < ?", endAt.AddDate(0, 0, 1))
+			baseQuery = baseQuery.Where("orders.created_at < ?", endAt.AddDate(0, 0, 1))
 		}
 	}
 	if filter.Status != "" {
 		if filter.Status == "仅看已退款" {
-			idQuery = idQuery.Where("orders.status LIKE ?", "%退款%")
+			baseQuery = baseQuery.Where("orders.status LIKE ?", "%退款%")
 		} else {
-			idQuery = idQuery.Where("orders.status = ?", filter.Status)
+			baseQuery = baseQuery.Where("orders.status = ?", filter.Status)
 		}
 	}
 	if filter.Source != "" {
 		switch filter.Source {
 		case "我的直销":
-			idQuery = idQuery.Where("orders.affiliate_profile_id = ?", profile.ID)
+			baseQuery = baseQuery.Where("orders.affiliate_profile_id = ?", profile.ID)
 		case "伙伴渠道":
-			idQuery = idQuery.Where("orders.affiliate_profile_id <> ?", profile.ID)
+			baseQuery = baseQuery.Where("orders.affiliate_profile_id <> ?", profile.ID)
 		}
 	}
 
 	var total int64
-	if err := idQuery.Count(&total).Error; err != nil {
+	if err := baseQuery.Count(&total).Error; err != nil {
 		return nil, err
 	}
 	if total == 0 {
@@ -1127,7 +1125,7 @@ func (s *ZhengyeService) GetOrders(userID uint, filter ZhengyeOrdersFilter) (*Zh
 	}
 
 	var orderIDs []uint
-	if err := idQuery.Order("orders.created_at desc").Offset((filter.Page-1)*filter.PageSize).Limit(filter.PageSize).Pluck("orders.id", &orderIDs).Error; err != nil {
+	if err := baseQuery.Order("orders.created_at desc").Offset((filter.Page-1)*filter.PageSize).Limit(filter.PageSize).Pluck("orders.id", &orderIDs).Error; err != nil {
 		return nil, err
 	}
 
@@ -2088,10 +2086,10 @@ func (s *ZhengyeService) GetPartnerOrdersByDate(userID, partnerID uint, filter O
 	var myProfile models.AffiliateProfile
 	_ = s.db.Where("user_id = ?", userID).First(&myProfile).Error
 
-	// 构建订单 ID 查询，避免因 join 佣金表导致重复订单
-	idQuery := s.db.Model(&models.Order{}).
-		Distinct("orders.id, orders.created_at").
-		Where("orders.affiliate_profile_id IN ?", profileIDs)
+	// 构建订单查询，过滤子订单
+	baseQ := s.db.Model(&models.Order{}).
+		Where("orders.affiliate_profile_id IN ?", profileIDs).
+		Where("orders.parent_id IS NULL")
 
 	// 日期过滤：只传 start_date 时，默认按当天；传 end_date 时按闭区间结束日处理
 	if filter.StartDate != "" {
@@ -2099,7 +2097,7 @@ func (s *ZhengyeService) GetPartnerOrdersByDate(userID, partnerID uint, filter O
 		if err != nil {
 			return nil, fmt.Errorf("invalid start_date")
 		}
-		idQuery = idQuery.Where("orders.created_at >= ?", startAt)
+		baseQ = baseQ.Where("orders.created_at >= ?", startAt)
 
 		endDate := filter.EndDate
 		if endDate == "" {
@@ -2109,25 +2107,23 @@ func (s *ZhengyeService) GetPartnerOrdersByDate(userID, partnerID uint, filter O
 		if err != nil {
 			return nil, fmt.Errorf("invalid end_date")
 		}
-		idQuery = idQuery.Where("orders.created_at < ?", endAt.AddDate(0, 0, 1))
+		baseQ = baseQ.Where("orders.created_at < ?", endAt.AddDate(0, 0, 1))
 	} else if filter.EndDate != "" {
 		endAt, err := time.Parse("2006-01-02", filter.EndDate)
 		if err != nil {
 			return nil, fmt.Errorf("invalid end_date")
 		}
-		idQuery = idQuery.Where("orders.created_at < ?", endAt.AddDate(0, 0, 1))
+		baseQ = baseQ.Where("orders.created_at < ?", endAt.AddDate(0, 0, 1))
 	}
 
 	keyword := strings.TrimSpace(filter.Keyword)
 	if keyword != "" {
 		like := "%" + keyword + "%"
-		idQuery = idQuery.
-			Joins("LEFT JOIN order_items oi ON oi.order_id = orders.id").
-			Where("orders.order_no LIKE ? OR CAST(oi.title_json AS TEXT) LIKE ?", like, like)
+		baseQ = baseQ.Where("orders.order_no ILIKE ? OR orders.id IN (SELECT oi.order_id FROM order_items oi WHERE CAST(oi.title_json AS TEXT) ILIKE ?)", like, like)
 	}
 
 	var total int64
-	if err := idQuery.Count(&total).Error; err != nil {
+	if err := baseQ.Count(&total).Error; err != nil {
 		return nil, err
 	}
 	if total == 0 {
@@ -2135,7 +2131,7 @@ func (s *ZhengyeService) GetPartnerOrdersByDate(userID, partnerID uint, filter O
 	}
 
 	var orderIDs []uint
-	if err := idQuery.Order("orders.created_at DESC").Offset((filter.Page-1)*filter.PageSize).Limit(filter.PageSize).Pluck("orders.id", &orderIDs).Error; err != nil {
+	if err := baseQ.Order("orders.created_at DESC").Offset((filter.Page-1)*filter.PageSize).Limit(filter.PageSize).Pluck("orders.id", &orderIDs).Error; err != nil {
 		return nil, err
 	}
 	if len(orderIDs) == 0 {

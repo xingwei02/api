@@ -138,8 +138,8 @@ func (s *SettlementService) GetTransferableCommissions(userID uint, page, pageSi
 		Select(`
 			ac.id,
 			ac.order_id,
-			o.order_no,
-			COALESCE(o.product_snapshot_name, o.product_name, '') AS product_name,
+			COALESCE(o.order_no, '') AS order_no,
+			'' AS product_name,
 			ac.commission_amount,
 			ac.status,
 			ac.transferred_to_balance,
