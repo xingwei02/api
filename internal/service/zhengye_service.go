@@ -738,12 +738,12 @@ func (s *ZhengyeService) GetDashboard(userID uint) (*ZhengyeDashboardDTO, error)
 
 	var todayEarnings float64
 	s.db.Model(&models.AffiliateCommission{}).
-		Where("affiliate_profile_id = ? AND status = ? AND created_at >= ?", profile.ID, "available", today).
+		Where("affiliate_profile_id = ? AND status IN ? AND created_at >= ?", profile.ID, []string{constants.AffiliateCommissionStatusPendingConfirm, constants.AffiliateCommissionStatusAvailable}, today).
 		Select("COALESCE(SUM(commission_amount), 0)").Scan(&todayEarnings)
 
 	var totalEarnings float64
 	s.db.Model(&models.AffiliateCommission{}).
-		Where("affiliate_profile_id = ? AND status IN ?", profile.ID, []string{"available", "withdrawn"}).
+		Where("affiliate_profile_id = ? AND status IN ?", profile.ID, []string{constants.AffiliateCommissionStatusPendingConfirm, constants.AffiliateCommissionStatusAvailable, constants.AffiliateCommissionStatusWithdrawn}).
 		Select("COALESCE(SUM(commission_amount), 0)").Scan(&totalEarnings)
 
 	// 已打款佣金（已提现）
@@ -755,7 +755,7 @@ func (s *ZhengyeService) GetDashboard(userID uint) (*ZhengyeDashboardDTO, error)
 	// 待打款佣金（可提现）
 	var pendingCommission float64
 	s.db.Model(&models.AffiliateCommission{}).
-		Where("affiliate_profile_id = ? AND status = ?", profile.ID, "available").
+		Where("affiliate_profile_id = ? AND status IN ?", profile.ID, []string{constants.AffiliateCommissionStatusPendingConfirm, constants.AffiliateCommissionStatusAvailable}).
 		Select("COALESCE(SUM(commission_amount), 0)").Scan(&pendingCommission)
 
 	// 累计销售额（来自关联订单的 base_amount）
@@ -984,7 +984,7 @@ func (s *ZhengyeService) GetStats(userID uint, period ZhengyeStatsPeriod) (*Zhen
 
 	var totalCommission float64
 	s.db.Model(&models.AffiliateCommission{}).
-		Where("affiliate_profile_id IN ? AND commission_type = ? AND status IN ?", networkProfileIDs, constants.AffiliateCommissionTypeOrder, []string{"available", "withdrawn"}).
+		Where("affiliate_profile_id IN ? AND commission_type = ? AND status IN ?", networkProfileIDs, constants.AffiliateCommissionTypeOrder, []string{constants.AffiliateCommissionStatusPendingConfirm, constants.AffiliateCommissionStatusAvailable, constants.AffiliateCommissionStatusWithdrawn}).
 		Select("COALESCE(SUM(commission_amount), 0)").Scan(&totalCommission)
 
 	var totalChannels int64
@@ -995,12 +995,12 @@ func (s *ZhengyeService) GetStats(userID uint, period ZhengyeStatsPeriod) (*Zhen
 	// 已打款 / 待打款结算
 	var paidSettlement float64
 	s.db.Model(&models.AffiliateCommission{}).
-		Where("affiliate_profile_id IN ? AND commission_type = ? AND status = ?", networkProfileIDs, constants.AffiliateCommissionTypeOrder, "withdrawn").
+		Where("affiliate_profile_id IN ? AND commission_type = ? AND status = ?", networkProfileIDs, constants.AffiliateCommissionTypeOrder, constants.AffiliateCommissionStatusWithdrawn).
 		Select("COALESCE(SUM(commission_amount), 0)").Scan(&paidSettlement)
 
 	var pendingSettlement float64
 	s.db.Model(&models.AffiliateCommission{}).
-		Where("affiliate_profile_id IN ? AND commission_type = ? AND status = ?", networkProfileIDs, constants.AffiliateCommissionTypeOrder, "available").
+		Where("affiliate_profile_id IN ? AND commission_type = ? AND status IN ?", networkProfileIDs, constants.AffiliateCommissionTypeOrder, []string{constants.AffiliateCommissionStatusPendingConfirm, constants.AffiliateCommissionStatusAvailable}).
 		Select("COALESCE(SUM(commission_amount), 0)").Scan(&pendingSettlement)
 
 	// 当前佣金比例和折扣率
@@ -1310,7 +1310,7 @@ func (s *ZhengyeService) GetTeam(userID uint, filter ZhengyeTeamFilter) (*Zhengy
 				Where("affiliate_profile_id = ? AND commission_type = ?", memberProfile.ID, "order").
 				Select("COALESCE(SUM(base_amount), 0)").Scan(&selfSales)
 			s.db.Model(&models.AffiliateCommission{}).
-				Where("affiliate_profile_id = ? AND status IN ?", memberProfile.ID, []string{"available", "withdrawn"}).
+				Where("affiliate_profile_id = ? AND status IN ?", memberProfile.ID, []string{constants.AffiliateCommissionStatusPendingConfirm, constants.AffiliateCommissionStatusAvailable, constants.AffiliateCommissionStatusWithdrawn}).
 				Select("COALESCE(SUM(commission_amount), 0)").Scan(&teamSettlement)
 		}
 		// 该成员的直属下级数（渠道数）
@@ -1685,7 +1685,7 @@ func (s *ZhengyeService) GetPartners(userID uint, filter ZhengyePartnersFilter) 
 				Select("COALESCE(SUM(commission_amount), 0)").Scan(&todayCommission)
 			// 累计佣金（结算）
 			s.db.Model(&models.AffiliateCommission{}).
-				Where("affiliate_profile_id = ? AND status IN ?", partnerProfile.ID, []string{"available", "withdrawn"}).
+				Where("affiliate_profile_id = ? AND status IN ?", partnerProfile.ID, []string{constants.AffiliateCommissionStatusPendingConfirm, constants.AffiliateCommissionStatusAvailable, constants.AffiliateCommissionStatusWithdrawn}).
 				Select("COALESCE(SUM(commission_amount), 0)").Scan(&totalCommission)
 			// 网络总订单
 			s.db.Model(&models.AffiliateCommission{}).
@@ -1795,7 +1795,7 @@ func (s *ZhengyeService) GetSettlement(userID uint, filter ZhengyeSettlementFilt
 		var pending float64
 		if err := s.db.Where("user_id = ?", p.UserID).First(&profile).Error; err == nil {
 			s.db.Model(&models.AffiliateCommission{}).
-				Where("affiliate_profile_id = ? AND commission_type = ? AND status = ?", profile.ID, constants.AffiliateCommissionTypeOrder, "available").
+				Where("affiliate_profile_id = ? AND commission_type = ? AND status IN ?", profile.ID, constants.AffiliateCommissionTypeOrder, []string{constants.AffiliateCommissionStatusPendingConfirm, constants.AffiliateCommissionStatusAvailable}).
 				Select("COALESCE(SUM(commission_amount), 0)").Scan(&pending)
 		}
 
@@ -1923,7 +1923,7 @@ func (s *ZhengyeService) PaySettlement(userID, partnerID uint, settleDate string
 	}
 	var pending float64
 	s.db.Model(&models.AffiliateCommission{}).
-		Where("affiliate_profile_id = ? AND status = ?", profile.ID, "available").
+		Where("affiliate_profile_id = ? AND status IN ?", profile.ID, []string{constants.AffiliateCommissionStatusPendingConfirm, constants.AffiliateCommissionStatusAvailable}).
 		Select("COALESCE(SUM(commission_amount), 0)").Scan(&pending)
 	now := time.Now()
 	settlement := models.AffiliateSettlement{
