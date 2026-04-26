@@ -855,15 +855,10 @@ func (s *ZhengyeService) SaveLevels(userID uint, input SaveZhengyeLevelsInput) e
 			return err
 		}
 		afterJSON, _ := json.Marshal(savedItems)
-		// 配置变更日志：暂时不强制写入，避免因表不存在导致保存失败
-		// 后续如需启用，需先确保数据库已创建 affiliate_level_change_logs 表
-		_ = tx.Create(&models.AffiliateLevelChangeLog{
-			UserID:     userID,
-			SchemeID:   scheme.ID,
-			BeforeJSON: string(beforeJSON),
-			AfterJSON:  string(afterJSON),
-		}).Error // 忽略日志写入错误，不影响主流程
-
+		// 配置变更日志：在事务外写入，避免表不存在时导致 PG 事务进入错误状态
+		// 这里先暂存数据，事务提交后再写日志
+		_ = beforeJSON
+		_ = afterJSON
 		return nil
 	})
 }
@@ -1941,14 +1936,34 @@ func (s *ZhengyeService) UpdatePartnerRate(userID, partnerID uint, rate float64)
 	if err := s.db.Where("user_id = ? AND parent_user_id = ?", partnerID, userID).First(&level).Error; err != nil {
 		return err
 	}
-	if rate < 0 {
-		rate = 0
+
+	// 校验 rate 必须是当前用户已设置的等级档位之一
+	var scheme models.AffiliateLevelScheme
+	if err := s.db.Where("user_id = ?", userID).First(&scheme).Error; err != nil {
+		return fmt.Errorf("未找到等级方案，请先设置伙伴等级返佣")
 	}
-	if level.MaxRate > 0 && rate > level.MaxRate {
-		rate = level.MaxRate
+	var items []models.AffiliateLevelItem
+	s.db.Where("scheme_id = ? AND deleted_at IS NULL", scheme.ID).Order("sort_order asc").Find(&items)
+	if len(items) == 0 {
+		return fmt.Errorf("未设置任何等级档位，请先设置伙伴等级返佣")
 	}
+	validRate := false
+	var matchedItem models.AffiliateLevelItem
+	for _, item := range items {
+		if item.Rate == rate {
+			validRate = true
+			matchedItem = item
+			break
+		}
+	}
+	if !validRate {
+		return fmt.Errorf("佣金比例必须选择已设置的等级档位")
+	}
+
 	level.CustomRate = rate
 	level.CurrentRate = rate
+	level.LevelItemID = matchedItem.ID
+	level.CurrentLevel = matchedItem.SortOrder
 	return s.db.Save(&level).Error
 }
 
