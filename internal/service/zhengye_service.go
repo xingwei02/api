@@ -1143,7 +1143,7 @@ func (s *ZhengyeService) GetStats(userID uint, period ZhengyeStatsPeriod) (*Zhen
 		Table("affiliate_commissions ac").
 		Joins("LEFT JOIN orders o ON o.id = ac.order_id").
 		Where("ac.affiliate_profile_id IN ? AND ac.commission_type = ? AND ac.created_at >= ?", networkProfileIDs, constants.AffiliateCommissionTypeOrder, startAt).
-		Group("DATE(created_at)").Order("day asc").Scan(&rows)
+		Group("DATE(ac.created_at)").Order("day asc").Scan(&rows)
 
 	trend := make([]ZhengyeStatsTrendItem, 0, len(rows))
 	for _, r := range rows {
