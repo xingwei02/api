@@ -1,6 +1,8 @@
 package service
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -496,6 +498,8 @@ type ZhengyeLevelUpgradeConditionDTO struct {
 	Days        int     `json:"days,omitempty"`
 	DailyAmount float64 `json:"daily_amount,omitempty"`
 	Orders      int     `json:"orders,omitempty"`
+	MetricType  string  `json:"metric_type,omitempty"`
+	PeriodType  string  `json:"period_type,omitempty"`
 }
 
 // ZhengyeLevelItemDTO 档位配置条目
@@ -528,10 +532,25 @@ type ZhengyeLevelTeamGroupDTO struct {
 
 // ZhengyeLevelsDTO 等级返佣页数据
 type ZhengyeLevelsDTO struct {
-	MyRate      float64                    `json:"my_rate"`
-	EntryRate   float64                    `json:"entry_rate"`
-	Levels      []ZhengyeLevelItemDTO      `json:"levels"`
-	TeamByLevel []ZhengyeLevelTeamGroupDTO `json:"team_by_level"`
+	MyRate       float64                    `json:"my_rate"`
+	EntryRate    float64                    `json:"entry_rate"`
+	CanConfigure bool                       `json:"can_configure"`
+	BlockReason  string                     `json:"block_reason"`
+	Levels       []ZhengyeLevelItemDTO      `json:"levels"`
+	TeamByLevel  []ZhengyeLevelTeamGroupDTO `json:"team_by_level"`
+}
+
+type AffiliateLevelHealthIssueDTO struct {
+	Code    string `json:"code"`
+	Title   string `json:"title"`
+	Count   int64  `json:"count"`
+	Level   string `json:"level"`
+	Message string `json:"message"`
+}
+
+type AffiliateLevelHealthDTO struct {
+	CheckedAt time.Time                      `json:"checked_at"`
+	Issues    []AffiliateLevelHealthIssueDTO `json:"issues"`
 }
 
 // SaveZhengyeLevelsInput 保存等级返佣输入
@@ -556,19 +575,65 @@ type SaveZhengyeLevelItemInput struct {
 // Service 方法
 // ─────────────────────────────────────────────────────────────────────────────
 
+// getMyAssignableRate 返回当前登录 Token 商真实可分配给下级的拿货折扣/返佣上限。
+// 规则：
+//  1. 有上级时，以 user_promotion_levels.current_rate 为准，不能信任前端传值。
+//  2. 无上级时，默认 0；如果后台 admin 在 affiliate_level_schemes.my_rate 设置了上限，则以该值为准。
+func (s *ZhengyeService) getMyAssignableRate(userID uint) (rate float64, hasParent bool, err error) {
+	if s == nil || s.db == nil || userID == 0 {
+		return 0, false, nil
+	}
+
+	var level models.UserPromotionLevel
+	err = s.db.Where("user_id = ?", userID).First(&level).Error
+	if err == nil && level.ParentUserID > 0 {
+		if level.CurrentRate < 0 {
+			return 0, true, nil
+		}
+		return level.CurrentRate, true, nil
+	}
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return 0, false, err
+	}
+
+	var scheme models.AffiliateLevelScheme
+	if err := s.db.Where("user_id = ?", userID).First(&scheme).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return 0, false, nil
+		}
+		return 0, false, err
+	}
+	if scheme.MyRate < 0 {
+		return 0, false, nil
+	}
+	return scheme.MyRate, false, nil
+}
+
 // GetLevels 获取伙伴等级返佣配置
 func (s *ZhengyeService) GetLevels(userID uint) (*ZhengyeLevelsDTO, error) {
+	myRate, _, err := s.getMyAssignableRate(userID)
+	if err != nil {
+		return nil, err
+	}
+	canConfigure := myRate > 0
+	blockReason := ""
+	if !canConfigure {
+		blockReason = "自己的拿货折扣是 0.00，不能设置伙伴等级返佣"
+	}
+
 	var scheme models.AffiliateLevelScheme
-	err := s.db.Preload("Items", func(db *gorm.DB) *gorm.DB {
+	err = s.db.Preload("Items", func(db *gorm.DB) *gorm.DB {
 		return db.Order("sort_order asc, id asc")
 	}).Where("user_id = ?", userID).First(&scheme).Error
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return &ZhengyeLevelsDTO{
-				MyRate:      0,
-				EntryRate:   0,
-				Levels:      []ZhengyeLevelItemDTO{},
-				TeamByLevel: []ZhengyeLevelTeamGroupDTO{},
+				MyRate:       myRate,
+				EntryRate:    0,
+				CanConfigure: canConfigure,
+				BlockReason:  blockReason,
+				Levels:       []ZhengyeLevelItemDTO{},
+				TeamByLevel:  []ZhengyeLevelTeamGroupDTO{},
 			}, nil
 		}
 		return nil, err
@@ -599,6 +664,8 @@ func (s *ZhengyeService) GetLevels(userID uint) (*ZhengyeLevelsDTO, error) {
 				Days:        maxInt(item.UpgradeContinuousDays, item.UpgradePeriodDays),
 				DailyAmount: item.UpgradeTargetAmount,
 				Orders:      item.UpgradeTargetOrders,
+				MetricType:  normalizeUpgradeMetricType(item.UpgradeMetricType, item.UpgradeTargetAmount, item.UpgradeTargetOrders),
+				PeriodType:  normalizeUpgradePeriodType(item.UpgradePeriodType, item.UpgradePeriodDays),
 			}
 		}
 
@@ -622,47 +689,70 @@ func (s *ZhengyeService) GetLevels(userID uint) (*ZhengyeLevelsDTO, error) {
 	}
 
 	return &ZhengyeLevelsDTO{
-		MyRate:      scheme.MyRate,
-		EntryRate:   scheme.EntryRate,
-		Levels:      levels,
-		TeamByLevel: teamByLevel,
+		MyRate:       myRate,
+		EntryRate:    scheme.EntryRate,
+		CanConfigure: canConfigure,
+		BlockReason:  blockReason,
+		Levels:       levels,
+		TeamByLevel:  teamByLevel,
 	}, nil
 }
 
 // SaveLevels 整体保存伙伴等级返佣配置
 func (s *ZhengyeService) SaveLevels(userID uint, input SaveZhengyeLevelsInput) error {
-	if len(input.Levels) > 3 {
-		return fmt.Errorf("levels cannot exceed 3")
+	myRate, _, err := s.getMyAssignableRate(userID)
+	if err != nil {
+		return err
 	}
-	if input.MyRate < 0 {
-		return fmt.Errorf("my_rate cannot be negative")
+	if myRate <= 0 {
+		return fmt.Errorf("自己的拿货折扣是 0.00，不能设置伙伴等级返佣")
 	}
-	if input.EntryRate < 0 {
-		return fmt.Errorf("entry_rate cannot be negative")
+	if len(input.Levels) == 0 || len(input.Levels) > 3 {
+		return fmt.Errorf("最多设置3个等级，且至少设置1个")
 	}
 
 	entryCount := 0
-	for _, item := range input.Levels {
-		if item.Name == "" {
-			return fmt.Errorf("level name is required")
+	var previousRate float64
+	for idx, item := range input.Levels {
+		if strings.TrimSpace(item.Name) == "" {
+			return fmt.Errorf("等级名称不能为空")
 		}
-		if item.Rate < 0 {
-			return fmt.Errorf("level rate cannot be negative")
+		if item.Rate <= 0 {
+			return fmt.Errorf("等级返佣必须大于0")
 		}
-		if input.MyRate > 0 && item.Rate >= input.MyRate {
-			return fmt.Errorf("level rate must be less than my_rate")
+		if item.Rate >= myRate {
+			return fmt.Errorf("等级返佣必须小于自己的拿货折扣")
+		}
+		if idx > 0 && item.Rate <= previousRate {
+			return fmt.Errorf("等级返佣必须从低到高递增")
 		}
 		if item.IsEntry {
 			entryCount++
 		}
+		if idx == 0 && !item.IsEntry {
+			return fmt.Errorf("最低档必须是入门档")
+		}
+		if idx > 0 && item.IsEntry {
+			return fmt.Errorf("只有最低档可以是入门档")
+		}
+		if !item.IsEntry && item.UpgradeCondition == nil {
+			return fmt.Errorf("非入门档必须设置升级条件")
+		}
 		if item.UpgradeCondition != nil {
-			if item.UpgradeCondition.Days < 0 || item.UpgradeCondition.DailyAmount < 0 || item.UpgradeCondition.Orders < 0 {
-				return fmt.Errorf("upgrade condition cannot be negative")
+			if item.UpgradeCondition.Days <= 0 {
+				return fmt.Errorf("连续天数必须大于0")
+			}
+			if item.UpgradeCondition.DailyAmount < 0 || item.UpgradeCondition.Orders < 0 {
+				return fmt.Errorf("升级条件不能为负数")
+			}
+			if !item.IsEntry && item.UpgradeCondition.DailyAmount <= 0 && item.UpgradeCondition.Orders <= 0 {
+				return fmt.Errorf("非入门档必须设置大于0的销售额或订单数目标")
 			}
 		}
+		previousRate = item.Rate
 	}
-	if len(input.Levels) > 0 && entryCount != 1 {
-		return fmt.Errorf("exactly one entry level is required")
+	if entryCount != 1 {
+		return fmt.Errorf("必须有且只有一个入门档")
 	}
 
 	return s.db.Transaction(func(tx *gorm.DB) error {
@@ -679,17 +769,8 @@ func (s *ZhengyeService) SaveLevels(userID uint, input SaveZhengyeLevelsInput) e
 			}
 		}
 
-		scheme.MyRate = input.MyRate
-		if entryCount == 1 {
-			for _, item := range input.Levels {
-				if item.IsEntry {
-					scheme.EntryRate = item.Rate
-					break
-				}
-			}
-		} else {
-			scheme.EntryRate = input.EntryRate
-		}
+		scheme.MyRate = myRate
+		scheme.EntryRate = input.Levels[0].Rate
 		if scheme.ID > 0 {
 			scheme.Version++
 		}
@@ -697,34 +778,122 @@ func (s *ZhengyeService) SaveLevels(userID uint, input SaveZhengyeLevelsInput) e
 			return err
 		}
 
-		if err := tx.Where("scheme_id = ?", scheme.ID).Delete(&models.AffiliateLevelItem{}).Error; err != nil {
+		var existingItems []models.AffiliateLevelItem
+		if err := tx.Where("scheme_id = ?", scheme.ID).Order("sort_order asc, id asc").Find(&existingItems).Error; err != nil {
 			return err
+		}
+		beforeJSON, _ := json.Marshal(existingItems)
+		existingByOrder := make(map[int]models.AffiliateLevelItem, len(existingItems))
+		for _, item := range existingItems {
+			existingByOrder[item.SortOrder] = item
 		}
 
 		for idx, item := range input.Levels {
+			sortOrder := idx + 1
+			if old, ok := existingByOrder[sortOrder]; ok && item.Rate < old.Rate {
+				return fmt.Errorf("第%d档返佣不能低于线上已生效值 %.2f", sortOrder, old.Rate)
+			}
 			levelItem := models.AffiliateLevelItem{
 				SchemeID:  scheme.ID,
-				SortOrder: idx + 1,
-				Name:      item.Name,
+				SortOrder: sortOrder,
+				Name:      strings.TrimSpace(item.Name),
 				Icon:      item.Icon,
 				Rate:      item.Rate,
 				IsEntry:   item.IsEntry,
 				Style:     item.Style,
 			}
+			if old, ok := existingByOrder[sortOrder]; ok {
+				levelItem.ID = old.ID
+				levelItem.CreatedAt = old.CreatedAt
+			}
 			if item.UpgradeCondition != nil {
 				levelItem.UpgradeConditionType = "custom"
+				levelItem.UpgradeMetricType = normalizeUpgradeMetricType(item.UpgradeCondition.MetricType, item.UpgradeCondition.DailyAmount, item.UpgradeCondition.Orders)
+				levelItem.UpgradePeriodType = normalizeUpgradePeriodType(item.UpgradeCondition.PeriodType, item.UpgradeCondition.Days)
 				levelItem.UpgradeContinuousDays = item.UpgradeCondition.Days
 				levelItem.UpgradePeriodDays = item.UpgradeCondition.Days
 				levelItem.UpgradeTargetAmount = item.UpgradeCondition.DailyAmount
 				levelItem.UpgradeTargetOrders = item.UpgradeCondition.Orders
 			}
-			if err := tx.Create(&levelItem).Error; err != nil {
+			if levelItem.ID > 0 {
+				if err := tx.Save(&levelItem).Error; err != nil {
+					return err
+				}
+			} else if err := tx.Create(&levelItem).Error; err != nil {
+				return err
+			}
+
+			if err := tx.Model(&models.UserPromotionLevel{}).
+				Where("parent_user_id = ? AND level_item_id = ?", userID, levelItem.ID).
+				Updates(map[string]interface{}{
+					"current_level": levelItem.SortOrder,
+					"current_rate":  levelItem.Rate,
+					"updated_at":    time.Now(),
+				}).Error; err != nil {
 				return err
 			}
 		}
 
+		for _, old := range existingItems {
+			if old.SortOrder <= len(input.Levels) {
+				continue
+			}
+			var memberCount int64
+			if err := tx.Model(&models.UserPromotionLevel{}).Where("parent_user_id = ? AND level_item_id = ?", userID, old.ID).Count(&memberCount).Error; err != nil {
+				return err
+			}
+			if memberCount > 0 {
+				return fmt.Errorf("第%d档已有伙伴，不能直接删除，请先迁移或降级", old.SortOrder)
+			}
+			if err := tx.Delete(&old).Error; err != nil {
+				return err
+			}
+		}
+
+		var savedItems []models.AffiliateLevelItem
+		if err := tx.Where("scheme_id = ?", scheme.ID).Order("sort_order asc, id asc").Find(&savedItems).Error; err != nil {
+			return err
+		}
+		afterJSON, _ := json.Marshal(savedItems)
+		if err := tx.Create(&models.AffiliateLevelChangeLog{
+			UserID:     userID,
+			SchemeID:   scheme.ID,
+			BeforeJSON: string(beforeJSON),
+			AfterJSON:  string(afterJSON),
+		}).Error; err != nil {
+			return err
+		}
+
 		return nil
 	})
+}
+
+func (s *ZhengyeService) GetAffiliateLevelHealth() (*AffiliateLevelHealthDTO, error) {
+	if s == nil || s.db == nil {
+		return &AffiliateLevelHealthDTO{CheckedAt: time.Now(), Issues: []AffiliateLevelHealthIssueDTO{}}, nil
+	}
+	issues := []AffiliateLevelHealthIssueDTO{}
+	addIssue := func(code, title, message string, count int64) {
+		level := "ok"
+		if count > 0 {
+			level = "error"
+		}
+		issues = append(issues, AffiliateLevelHealthIssueDTO{Code: code, Title: title, Count: count, Level: level, Message: message})
+	}
+	var count int64
+	s.db.Raw(`SELECT COUNT(*) FROM (SELECT user_id FROM user_promotion_levels WHERE deleted_at IS NULL GROUP BY user_id HAVING COUNT(*) > 1) t`).Scan(&count)
+	addIssue("upl_duplicate_user", "user_promotion_levels 一人多条", "同一用户应最多一条有效推广等级关系。", count)
+	s.db.Raw(`SELECT COUNT(*) FROM (SELECT user_id FROM affiliate_level_schemes WHERE deleted_at IS NULL GROUP BY user_id HAVING COUNT(*) > 1) t`).Scan(&count)
+	addIssue("scheme_duplicate_user", "affiliate_level_schemes 一人多套", "同一 Token 商应最多一套有效等级方案。", count)
+	s.db.Raw(`SELECT COUNT(*) FROM (SELECT scheme_id FROM affiliate_level_items WHERE deleted_at IS NULL GROUP BY scheme_id HAVING COUNT(*) > 3) t`).Scan(&count)
+	addIssue("scheme_over_3_items", "等级档位超过 3 档", "每套方案最多允许 3 个有效档位。", count)
+	s.db.Raw(`SELECT COUNT(*) FROM user_promotion_levels upl LEFT JOIN affiliate_level_items ali ON ali.id = upl.level_item_id AND ali.deleted_at IS NULL WHERE upl.deleted_at IS NULL AND upl.level_item_id > 0 AND ali.id IS NULL`).Scan(&count)
+	addIssue("broken_level_item", "level_item_id 指向无效档位", "这类伙伴应回落到上级方案入门档。", count)
+	s.db.Raw(`SELECT COUNT(*) FROM affiliate_level_items curr JOIN affiliate_level_items prev ON prev.scheme_id = curr.scheme_id AND prev.deleted_at IS NULL AND prev.sort_order = curr.sort_order - 1 WHERE curr.deleted_at IS NULL AND curr.rate <= prev.rate`).Scan(&count)
+	addIssue("rate_not_increasing", "档位 rate 未严格递增", "同一方案下 sort_order 越高，rate 必须越高。", count)
+	s.db.Raw(`SELECT COUNT(*) FROM affiliate_level_items ali JOIN affiliate_level_schemes s ON s.id = ali.scheme_id AND s.deleted_at IS NULL LEFT JOIN user_promotion_levels upl ON upl.user_id = s.user_id AND upl.parent_user_id > 0 AND upl.deleted_at IS NULL WHERE ali.deleted_at IS NULL AND ali.rate >= CASE WHEN upl.id IS NOT NULL THEN upl.current_rate ELSE COALESCE(s.my_rate,0) END`).Scan(&count)
+	addIssue("rate_over_assignable", "档位 rate 超过自身上限", "所有下级档位必须小于 Token 商自身真实可分配拿货折扣。", count)
+	return &AffiliateLevelHealthDTO{CheckedAt: time.Now(), Issues: issues}, nil
 }
 
 // GetDashboard 获取推广中心首页概览数据
@@ -780,6 +949,10 @@ func (s *ZhengyeService) GetDashboard(userID uint) (*ZhengyeDashboardDTO, error)
 
 	var scheme models.AffiliateLevelScheme
 	s.db.Where("user_id = ?", userID).First(&scheme)
+	assignableRate, _, assignableErr := s.getMyAssignableRate(userID)
+	if assignableErr != nil {
+		return nil, assignableErr
+	}
 
 	// 查询当前用户在上级体系中的档位信息
 	var myLevel models.UserPromotionLevel
@@ -790,53 +963,68 @@ func (s *ZhengyeService) GetDashboard(userID uint) (*ZhengyeDashboardDTO, error)
 	hasParent := false
 	if err := s.db.Where("user_id = ?", userID).First(&myLevel).Error; err == nil {
 		hasParent = myLevel.ParentUserID > 0
-		// 有上级，使用上级设置的等级体系
-		currentRate = myLevel.CurrentRate
+		if !hasParent {
+			// 没有上级时，默认显示 0；若后台 admin 显式配置了无上级 Token 商拿货折扣，则使用该配置。
+			currentRate = assignableRate
+			maxCommissionRate = assignableRate
+			if assignableRate > 0 {
+				upgradeCondition = fmt.Sprintf("后台已设置拿货折扣 %.2f，可设置伙伴等级返佣", assignableRate)
+			} else {
+				upgradeCondition = "自己的拿货折扣是 0.00，不能设置伙伴等级返佣"
+			}
+		} else {
+			// 有上级，使用上级设置的等级体系
+			currentRate = myLevel.CurrentRate
 
-		// 查询上级设置的最高档位比例
-		var parentScheme models.AffiliateLevelScheme
-		if err2 := s.db.Where("user_id = ?", myLevel.ParentUserID).First(&parentScheme).Error; err2 == nil {
-			entryRate := parentScheme.EntryRate
-			var entryLevelItem models.AffiliateLevelItem
-			if errEntry := s.db.Where("scheme_id = ? AND is_entry = ?", parentScheme.ID, true).Order("sort_order asc, id asc").First(&entryLevelItem).Error; errEntry == nil {
-				if entryLevelItem.Rate > 0 {
-					entryRate = entryLevelItem.Rate
+			// 查询上级设置的最高档位比例
+			var parentScheme models.AffiliateLevelScheme
+			if err2 := s.db.Where("user_id = ?", myLevel.ParentUserID).First(&parentScheme).Error; err2 == nil {
+				entryRate := parentScheme.EntryRate
+				var entryLevelItem models.AffiliateLevelItem
+				if errEntry := s.db.Where("scheme_id = ? AND is_entry = ?", parentScheme.ID, true).Order("sort_order asc, id asc").First(&entryLevelItem).Error; errEntry == nil {
+					if entryLevelItem.Rate > 0 {
+						entryRate = entryLevelItem.Rate
+					}
 				}
-			}
-			var maxLevelItem models.AffiliateLevelItem
-			if err3 := s.db.Where("scheme_id = ?", parentScheme.ID).Order("sort_order DESC, rate DESC").First(&maxLevelItem).Error; err3 == nil {
-				maxCommissionRate = maxLevelItem.Rate
-			}
-			scheme.EntryRate = entryRate
+				var maxLevelItem models.AffiliateLevelItem
+				if err3 := s.db.Where("scheme_id = ?", parentScheme.ID).Order("sort_order DESC, rate DESC").First(&maxLevelItem).Error; err3 == nil {
+					maxCommissionRate = maxLevelItem.Rate
+				}
+				scheme.EntryRate = entryRate
 
-			// 查询下一档升级要求
-			var nextLevelItem models.AffiliateLevelItem
-			if err4 := s.db.Where("scheme_id = ? AND sort_order > ?", parentScheme.ID, myLevel.CurrentLevel).Order("sort_order ASC").First(&nextLevelItem).Error; err4 == nil {
-				// 有下一档
-				if nextLevelItem.UpgradeContinuousDays > 0 || nextLevelItem.UpgradeTargetAmount > 0 || nextLevelItem.UpgradeTargetOrders > 0 {
-					upgradeCondition = fmt.Sprintf("升级到 %s：", nextLevelItem.Name)
-					if nextLevelItem.UpgradeContinuousDays > 0 {
-						upgradeCondition += fmt.Sprintf("连续%d天", nextLevelItem.UpgradeContinuousDays)
-					}
-					if nextLevelItem.UpgradeTargetAmount > 0 {
-						upgradeCondition += fmt.Sprintf("日销%.0f元", nextLevelItem.UpgradeTargetAmount)
-					}
-					if nextLevelItem.UpgradeTargetOrders > 0 {
-						upgradeCondition += fmt.Sprintf("或%d单", nextLevelItem.UpgradeTargetOrders)
+				// 查询下一档升级要求
+				var nextLevelItem models.AffiliateLevelItem
+				if err4 := s.db.Where("scheme_id = ? AND sort_order > ?", parentScheme.ID, myLevel.CurrentLevel).Order("sort_order ASC").First(&nextLevelItem).Error; err4 == nil {
+					// 有下一档
+					if nextLevelItem.UpgradeContinuousDays > 0 || nextLevelItem.UpgradeTargetAmount > 0 || nextLevelItem.UpgradeTargetOrders > 0 {
+						upgradeCondition = fmt.Sprintf("升级到 %s：", nextLevelItem.Name)
+						if nextLevelItem.UpgradeContinuousDays > 0 {
+							upgradeCondition += fmt.Sprintf("连续%d天", nextLevelItem.UpgradeContinuousDays)
+						}
+						if nextLevelItem.UpgradeTargetAmount > 0 {
+							upgradeCondition += fmt.Sprintf("日销%.0f元", nextLevelItem.UpgradeTargetAmount)
+						}
+						if nextLevelItem.UpgradeTargetOrders > 0 {
+							upgradeCondition += fmt.Sprintf("或%d单", nextLevelItem.UpgradeTargetOrders)
+						}
+					} else {
+						upgradeCondition = fmt.Sprintf("下一档：%s (%.0f%%)", nextLevelItem.Name, nextLevelItem.Rate)
 					}
 				} else {
-					upgradeCondition = fmt.Sprintf("下一档：%s (%.0f%%)", nextLevelItem.Name, nextLevelItem.Rate)
+					// 已是最高档
+					upgradeCondition = "已是最高档位"
 				}
-			} else {
-				// 已是最高档
-				upgradeCondition = "已是最高档位"
 			}
 		}
 	} else {
-		// 无上级，使用自己的 scheme
-		currentRate = scheme.MyRate
-		maxCommissionRate = scheme.MyRate
-		upgradeCondition = "无法升级（无上级）"
+		// 无上级，默认 0；后台 admin 显式设置 scheme.my_rate 后才有可配置空间。
+		currentRate = assignableRate
+		maxCommissionRate = assignableRate
+		if assignableRate > 0 {
+			upgradeCondition = fmt.Sprintf("后台已设置拿货折扣 %.2f，可设置伙伴等级返佣", assignableRate)
+		} else {
+			upgradeCondition = "自己的拿货折扣是 0.00，不能设置伙伴等级返佣"
+		}
 	}
 
 	// 客户折扣率
@@ -1958,6 +2146,32 @@ func maxInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func normalizeUpgradeMetricType(value string, amount float64, orders int) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "sales", "amount":
+		return "sales"
+	case "orders", "order":
+		return "orders"
+	}
+	if orders > 0 && amount <= 0 {
+		return "orders"
+	}
+	return "sales"
+}
+
+func normalizeUpgradePeriodType(value string, days int) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "weekly", "week":
+		return "weekly"
+	case "daily", "day":
+		return "daily"
+	}
+	if days == 7 {
+		return "weekly"
+	}
+	return "daily"
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

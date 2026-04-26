@@ -75,21 +75,33 @@ func (s *AffiliateLevelUpgradeService) checkAndUpgrade(
 		return nil
 	}
 
-	// 找到比当前档位更高的档位（rate 更高的）
-	currentRate := level.CurrentRate
+	currentSortOrder := level.CurrentLevel
+	if level.LevelItemID > 0 {
+		for i := range scheme.Items {
+			if scheme.Items[i].ID == level.LevelItemID {
+				currentSortOrder = scheme.Items[i].SortOrder
+				break
+			}
+		}
+	}
+	if currentSortOrder <= 0 {
+		currentSortOrder = 1
+	}
+
+	// 找到当前档位之后、满足升级条件的最高 sort_order 档位。
 	var targetItem *models.AffiliateLevelItem
 	for i := range scheme.Items {
 		item := &scheme.Items[i]
 		if item.IsEntry {
 			continue // 入门档不作为升级目标
 		}
-		if item.Rate <= currentRate {
-			continue // 比当前档位低或相同，跳过
+		if item.SortOrder <= currentSortOrder {
+			continue // 只允许沿 sort_order 往更高档升级
 		}
 		// 检查升级条件
 		if s.meetsUpgradeCondition(level.UserID, item, todayStart, weekStart) {
-			// 取 rate 最高的达标档位
-			if targetItem == nil || item.Rate > targetItem.Rate {
+			// 取 sort_order 最高的达标档位
+			if targetItem == nil || item.SortOrder > targetItem.SortOrder {
 				targetItem = item
 			}
 		}
@@ -104,7 +116,7 @@ func (s *AffiliateLevelUpgradeService) checkAndUpgrade(
 		Where("user_id = ?", level.UserID).
 		Updates(map[string]interface{}{
 			"level_item_id": targetItem.ID,
-			"current_level": level.CurrentLevel + 1,
+			"current_level": targetItem.SortOrder,
 			"current_rate":  targetItem.Rate,
 			"updated_at":    time.Now(),
 		}).Error
@@ -120,6 +132,9 @@ func (s *AffiliateLevelUpgradeService) meetsUpgradeCondition(
 		return false
 	}
 
+	metricType := normalizeUpgradeMetricType(item.UpgradeMetricType, item.UpgradeTargetAmount, item.UpgradeTargetOrders)
+	periodType := normalizeUpgradePeriodType(item.UpgradePeriodType, item.UpgradePeriodDays)
+
 	// 没有设置升级条件，不能自动升级
 	if item.UpgradePeriodDays <= 0 && item.UpgradeTargetAmount <= 0 && item.UpgradeTargetOrders <= 0 {
 		return false
@@ -127,7 +142,7 @@ func (s *AffiliateLevelUpgradeService) meetsUpgradeCondition(
 
 	// 确定考核起始时间
 	var periodStart time.Time
-	if item.UpgradePeriodDays == 7 {
+	if periodType == "weekly" || item.UpgradePeriodDays == 7 {
 		periodStart = weekStart
 	} else {
 		periodStart = todayStart
@@ -153,29 +168,32 @@ func (s *AffiliateLevelUpgradeService) meetsUpgradeCondition(
 	`, userID, periodStart).Scan(&agg)
 
 	// 按订单数考核
-	if item.UpgradeTargetOrders > 0 {
+	if item.UpgradeTargetOrders > 0 && metricType != "sales" {
 		if int(agg.OrderCount) < item.UpgradeTargetOrders {
 			return false
 		}
 	}
 
 	// 按销售额考核
-	if item.UpgradeTargetAmount > 0 {
+	if item.UpgradeTargetAmount > 0 && metricType != "orders" {
 		if agg.TotalAmount < item.UpgradeTargetAmount {
 			return false
 		}
 	}
 
-	// 连续天数考核（简化：检查 continuous_days 内每天都有订单）
+	// 连续天数考核：逐天聚合，并要求每天都达到销售额/订单数目标。
 	if item.UpgradeContinuousDays > 1 {
 		continuousStart := todayStart.AddDate(0, 0, -(item.UpgradeContinuousDays - 1))
-		type DayCount struct {
-			Day   string
-			Count int64
+		type DayAgg struct {
+			Day         string
+			TotalAmount float64
+			OrderCount  int64
 		}
-		var dayCounts []DayCount
+		var dayAggs []DayAgg
 		models.DB.Raw(`
-			SELECT DATE(o.paid_at) AS day, COUNT(o.id) AS count
+			SELECT DATE(o.paid_at) AS day,
+			       COALESCE(SUM(o.total_amount), 0) AS total_amount,
+			       COUNT(o.id) AS order_count
 			FROM orders o
 			INNER JOIN affiliate_profiles ap ON ap.id = o.affiliate_profile_id
 			WHERE ap.user_id = ?
@@ -183,10 +201,27 @@ func (s *AffiliateLevelUpgradeService) meetsUpgradeCondition(
 			  AND o.paid_at >= ?
 			  AND o.deleted_at IS NULL
 			GROUP BY DATE(o.paid_at)
-		`, userID, continuousStart).Scan(&dayCounts)
+		`, userID, continuousStart).Scan(&dayAggs)
 
-		if len(dayCounts) < item.UpgradeContinuousDays {
+		if len(dayAggs) < item.UpgradeContinuousDays {
 			return false
+		}
+		dayMap := make(map[string]DayAgg, len(dayAggs))
+		for _, dayAgg := range dayAggs {
+			dayMap[dayAgg.Day] = dayAgg
+		}
+		for offset := 0; offset < item.UpgradeContinuousDays; offset++ {
+			day := continuousStart.AddDate(0, 0, offset).Format("2006-01-02")
+			dayAgg, ok := dayMap[day]
+			if !ok {
+				return false
+			}
+			if item.UpgradeTargetOrders > 0 && metricType != "sales" && int(dayAgg.OrderCount) < item.UpgradeTargetOrders {
+				return false
+			}
+			if item.UpgradeTargetAmount > 0 && metricType != "orders" && dayAgg.TotalAmount < item.UpgradeTargetAmount {
+				return false
+			}
 		}
 	}
 

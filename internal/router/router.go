@@ -335,6 +335,7 @@ func SetupRouter(cfg *config.Config, c *provider.Container) *gin.Engine {
 				authorized.PUT("/settings/affiliate", adminHandler.UpdateAffiliateSettings)
 				authorized.GET("/affiliate/rank-config", adminHandler.GetRankConfig)
 				authorized.PUT("/affiliate/rank-config", adminHandler.SaveRankConfig)
+				authorized.GET("/affiliate/level-health", adminHandler.GetAffiliateLevelHealth)
 				authorized.POST("/affiliate/backfill-commissions", adminHandler.BackfillCommissions)
 				authorized.POST("/affiliate/backfill-order/:id", adminHandler.BackfillSingleOrderCommission)
 				authorized.PUT("/password", adminHandler.UpdateAdminPassword) // 修改密码

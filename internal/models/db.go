@@ -152,6 +152,7 @@ func AutoMigrate() error {
 		&CycleData{},
 		&AffiliateLevelScheme{},
 		&AffiliateLevelItem{},
+		&AffiliateLevelChangeLog{},
 		&AffiliateContact{},
 		&AffiliateDiscount{},
 		&AffiliateRankConfig{},

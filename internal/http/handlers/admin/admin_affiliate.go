@@ -163,3 +163,17 @@ func (h *Handler) SaveRankConfig(c *gin.Context) {
 	}
 	response.Success(c, cfg)
 }
+
+// GetAffiliateLevelHealth GET /admin/affiliate/level-health
+func (h *Handler) GetAffiliateLevelHealth(c *gin.Context) {
+	if h.ZhengyeService == nil {
+		shared.RespondError(c, response.CodeInternal, "error.internal_error", nil)
+		return
+	}
+	result, err := h.ZhengyeService.GetAffiliateLevelHealth()
+	if err != nil {
+		shared.RespondError(c, response.CodeInternal, "error.internal_error", err)
+		return
+	}
+	response.Success(c, result)
+}
