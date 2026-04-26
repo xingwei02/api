@@ -855,14 +855,14 @@ func (s *ZhengyeService) SaveLevels(userID uint, input SaveZhengyeLevelsInput) e
 			return err
 		}
 		afterJSON, _ := json.Marshal(savedItems)
-		if err := tx.Create(&models.AffiliateLevelChangeLog{
+		// 配置变更日志：暂时不强制写入，避免因表不存在导致保存失败
+		// 后续如需启用，需先确保数据库已创建 affiliate_level_change_logs 表
+		_ = tx.Create(&models.AffiliateLevelChangeLog{
 			UserID:     userID,
 			SchemeID:   scheme.ID,
 			BeforeJSON: string(beforeJSON),
 			AfterJSON:  string(afterJSON),
-		}).Error; err != nil {
-			return err
-		}
+		}).Error // 忽略日志写入错误，不影响主流程
 
 		return nil
 	})
