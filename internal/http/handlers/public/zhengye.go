@@ -538,9 +538,8 @@ func (h *Handler) GetTransferableCommissions(c *gin.Context) {
 }
 
 type transferCommissionRequest struct {
-	CommissionIDs []uint  `json:"commission_ids" binding:"required"`
-	Amount        float64 `json:"amount" binding:"required,min=1"`
-	VerifyCode    string  `json:"verify_code"`
+	Amount     float64 `json:"amount" binding:"required,min=1"`
+	VerifyCode string  `json:"verify_code"`
 }
 
 // TransferCommissionToBalance POST /affiliate/transfer
@@ -574,7 +573,7 @@ func (h *Handler) TransferCommissionToBalance(c *gin.Context) {
 		return
 	}
 
-	if err := h.SettlementService.TransferCommissionToBalance(uid, req.CommissionIDs, req.VerifyCode, user.Email, req.Amount); err != nil {
+	if err := h.SettlementService.TransferCommissionToBalance(uid, req.VerifyCode, user.Email, req.Amount); err != nil {
 		response.Error(c, http.StatusBadRequest, err.Error())
 		return
 	}

@@ -180,9 +180,10 @@ func (s *SettlementService) GetTransferableCommissions(userID uint, page, pageSi
 }
 
 // TransferCommissionToBalance 佣金转余额（带邮箱验证码）
+// 新逻辑：用户输入金额，系统自动扣减最早期的佣金记录
 // 红线1：金额处理必须用decimal.Decimal
 // 红线2：字段映射必须正确
-func (s *SettlementService) TransferCommissionToBalance(userID uint, commissionIDs []uint, verifyCode, userEmail string, amountFloat float64) error {
+func (s *SettlementService) TransferCommissionToBalance(userID uint, verifyCode, userEmail string, amountFloat float64) error {
 	// 红线1：立即转换为decimal.Decimal
 	amount := decimal.NewFromFloat(amountFloat).RoundBank(2)
 
@@ -206,10 +207,18 @@ func (s *SettlementService) TransferCommissionToBalance(userID uint, commissionI
 
 	// 3. 开启事务
 	return s.db.Transaction(func(tx *gorm.DB) error {
-		// 4. 查询待转账佣金（红线2：字段名CommissionAmount）
+		// 4. 查询用户的AffiliateProfile
+		var profile models.AffiliateProfile
+		err := tx.Where("user_id = ?", userID).First(&profile).Error
+		if err != nil {
+			return fmt.Errorf("未找到推广用户信息: %w", err)
+		}
+
+		// 5. 查询待转账佣金，按时间升序（最早的优先）
 		var commissions []models.AffiliateCommission
-		err := tx.Where("id IN ? AND status = ? AND transferred_to_balance = ?",
-			commissionIDs, constants.AffiliateCommissionStatusAvailable, false).
+		err = tx.Where("affiliate_profile_id = ? AND status = ? AND transferred_to_balance = ?",
+			profile.ID, constants.AffiliateCommissionStatusAvailable, false).
+			Order("available_at ASC, id ASC").
 			Find(&commissions).Error
 		if err != nil {
 			return err
@@ -219,32 +228,38 @@ func (s *SettlementService) TransferCommissionToBalance(userID uint, commissionI
 			return errors.New("没有可转账的佣金")
 		}
 
-		// 5. 计算总金额（红线1：使用decimal计算）
-		totalAmount := decimal.Zero
+		// 6. 计算可用佣金总额
+		totalAvailable := decimal.Zero
 		for _, comm := range commissions {
-			totalAmount = totalAmount.Add(comm.CommissionAmount.Decimal)
+			totalAvailable = totalAvailable.Add(comm.CommissionAmount.Decimal)
 		}
 
-		// 6. 验证金额是否匹配
-		if !totalAmount.Equal(amount) {
-			return fmt.Errorf("佣金总额%s与请求金额%s不匹配", totalAmount.StringFixed(2), amount.StringFixed(2))
+		// 7. 验证请求金额是否超过可用总额
+		if amount.GreaterThan(totalAvailable) {
+			return fmt.Errorf("转账金额%s超过可用佣金总额%s", amount.StringFixed(2), totalAvailable.StringFixed(2))
 		}
 
-		// 7. 获取用户余额（带乐观锁）
+		// 8. 按时间顺序扣减佣金，直到凑够金额
+		remaining := amount
+		var selectedCommissions []models.AffiliateCommission
+		for _, comm := range commissions {
+			if remaining.LessThanOrEqual(decimal.Zero) {
+				break
+			}
+			commAmount := comm.CommissionAmount.Decimal
+			selectedCommissions = append(selectedCommissions, comm)
+			remaining = remaining.Sub(commAmount)
+		}
+
+		// 9. 获取用户余额（带乐观锁）
 		var balance models.UserBalance
 		err = tx.Where("user_id = ?", userID).First(&balance).Error
 		if err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				// 创建初始余额
-				var profile models.AffiliateProfile
-				var affiliateProfileID *uint
-				if err := tx.Where("user_id = ?", userID).First(&profile).Error; err == nil {
-					affiliateProfileID = &profile.ID
-				}
-
 				balance = models.UserBalance{
 					UserID:             userID,
-					AffiliateProfileID: affiliateProfileID,
+					AffiliateProfileID: &profile.ID,
 					Balance:            0,
 					Version:            1,
 				}
@@ -256,9 +271,9 @@ func (s *SettlementService) TransferCommissionToBalance(userID uint, commissionI
 			}
 		}
 
-		// 8. 更新余额（乐观锁，红线1：decimal计算）
+		// 10. 更新余额（乐观锁，红线1：decimal计算）
 		oldVersion := balance.Version
-		amountFloat64, _ := totalAmount.Float64()
+		amountFloat64, _ := amount.Float64()
 		result := tx.Model(&models.UserBalance{}).
 			Where("user_id = ? AND version = ?", userID, oldVersion).
 			Updates(map[string]interface{}{
@@ -274,8 +289,12 @@ func (s *SettlementService) TransferCommissionToBalance(userID uint, commissionI
 			return errors.New("余额更新失败，请重试")
 		}
 
-		// 9. 标记佣金已转账
+		// 11. 标记选中的佣金已转账
 		now := time.Now()
+		var commissionIDs []uint
+		for _, comm := range selectedCommissions {
+			commissionIDs = append(commissionIDs, comm.ID)
+		}
 		err = tx.Model(&models.AffiliateCommission{}).
 			Where("id IN ?", commissionIDs).
 			Updates(map[string]interface{}{
@@ -286,14 +305,14 @@ func (s *SettlementService) TransferCommissionToBalance(userID uint, commissionI
 			return err
 		}
 
-		// 10. 记录余额明细
+		// 12. 记录余额明细
 		log := models.UserBalanceLog{
 			UserID:        userID,
 			Type:          models.BalanceLogTypeCommissionTransfer,
 			Amount:        amountFloat64,
 			BalanceBefore: balance.Balance,
 			BalanceAfter:  balance.Balance + amountFloat64,
-			Description:   fmt.Sprintf("佣金转入余额，共%d笔", len(commissions)),
+			Description:   fmt.Sprintf("佣金转入余额，共%d笔", len(selectedCommissions)),
 			RelatedType:   "commission",
 			CreatedAt:     now,
 		}
