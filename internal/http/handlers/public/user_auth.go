@@ -32,15 +32,18 @@ func (h *Handler) SendUserVerifyCode(c *gin.Context) {
 
 	purpose := strings.ToLower(strings.TrimSpace(req.Purpose))
 
-	// 检查邮箱验证开关（总开关）
-	emailVerificationEnabled, err := h.SettingService.GetEmailVerificationEnabled(true)
-	if err != nil {
-		shared.RespondError(c, response.CodeInternal, "error.send_verify_code_failed", err)
-		return
-	}
-	if !emailVerificationEnabled {
-		shared.RespondError(c, response.CodeForbidden, "error.email_verification_disabled", nil)
-		return
+	// 仅对 register / reset 场景检查邮箱验证总开关；
+	// commission_transfer / withdraw 等安全场景始终允许发送验证码。
+	if purpose == constants.VerifyPurposeRegister || purpose == constants.VerifyPurposeReset {
+		emailVerificationEnabled, err := h.SettingService.GetEmailVerificationEnabled(true)
+		if err != nil {
+			shared.RespondError(c, response.CodeInternal, "error.send_verify_code_failed", err)
+			return
+		}
+		if !emailVerificationEnabled {
+			shared.RespondError(c, response.CodeForbidden, "error.email_verification_disabled", nil)
+			return
+		}
 	}
 
 	// 当 purpose 为 register 时，检查注册是否开启

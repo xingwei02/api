@@ -269,6 +269,12 @@ func buildVerifyCodeContent(code, purpose, locale string) (string, string) {
 		case constants.VerifyPurposeChangeEmailOld, constants.VerifyPurposeChangeEmailNew:
 			subject = "更換郵箱驗證碼"
 			purposeText = "更換郵箱"
+		case constants.VerifyPurposeCommissionTransfer:
+			subject = "佣金轉餘額驗證碼"
+			purposeText = "佣金轉餘額"
+		case constants.VerifyPurposeWithdraw:
+			subject = "提現申請驗證碼"
+			purposeText = "提現申請"
 		}
 		body := fmt.Sprintf("您的驗證碼是：%s\n\n該驗證碼用於 %s，請勿洩露。", code, purposeText)
 		return subject, body
@@ -288,6 +294,12 @@ func buildVerifyCodeContent(code, purpose, locale string) (string, string) {
 		case constants.VerifyPurposeChangeEmailOld, constants.VerifyPurposeChangeEmailNew:
 			subject = "Change Email Code"
 			purposeText = "change email"
+		case constants.VerifyPurposeCommissionTransfer:
+			subject = "Commission Transfer Code"
+			purposeText = "commission transfer to balance"
+		case constants.VerifyPurposeWithdraw:
+			subject = "Withdrawal Verification Code"
+			purposeText = "withdrawal request"
 		}
 		body := fmt.Sprintf("Your verification code is: %s\n\nThis code is for %s. Do not share it.", code, purposeText)
 		return subject, body
@@ -307,6 +319,12 @@ func buildVerifyCodeContent(code, purpose, locale string) (string, string) {
 		case constants.VerifyPurposeChangeEmailOld, constants.VerifyPurposeChangeEmailNew:
 			subject = "更换邮箱验证码"
 			purposeText = "更换邮箱"
+		case constants.VerifyPurposeCommissionTransfer:
+			subject = "佣金转余额验证码"
+			purposeText = "佣金转余额"
+		case constants.VerifyPurposeWithdraw:
+			subject = "提现申请验证码"
+			purposeText = "提现申请"
 		}
 		body := fmt.Sprintf("您的验证码是：%s\n\n该验证码用于 %s，请勿泄露。", code, purposeText)
 		return subject, body
