@@ -2579,11 +2579,21 @@ func (s *ZhengyeService) GetOrderCommissionDetail(userID, orderID uint) (*OrderC
 			CommissionAmount: zhengyeFormatMoney(row.Amount),
 			Status:           row.Status,
 		})
+		if row.UserID == userID {
+			break
+		}
 	}
 
 	productName := ""
 	if len(order.Items) > 0 {
-		productName = fmt.Sprintf("商品ID:%d", order.Items[0].ProductID)
+		titleJSON := order.Items[0].TitleJSON
+		if s, ok := titleJSON["zh-CN"].(string); ok && s != "" {
+			productName = s
+		} else if s, ok := titleJSON["en"].(string); ok && s != "" {
+			productName = s
+		} else {
+			productName = fmt.Sprintf("商品ID:%d", order.Items[0].ProductID)
+		}
 	}
 	channelDiscount := order.OriginalAmount.Decimal.Sub(order.TotalAmount.Decimal).Round(2)
 	if channelDiscount.LessThan(decimal.Zero) {
