@@ -10,19 +10,21 @@ import (
 )
 
 // CaptchaSceneSetting 验证码场景配置
-// 注意：仅维护业务约定的 5 个场景
+// 注意：维护业务约定的验证码场景
 // login 场景同时作用于前台用户登录与后台管理员登录
-// 其余场景分别对应注册发码、找回发码、游客下单、礼品卡兑换
+// 其余场景分别对应注册发码、找回发码、游客下单、礼品卡兑换、佣金转余额、提现申请
 // 该结构用于 settings 存储与前后台接口通信
 // 并由服务层统一归一化和校验
 //
 //nolint:govet
 type CaptchaSceneSetting struct {
-	Login            bool `json:"login"`
-	RegisterSendCode bool `json:"register_send_code"`
-	ResetSendCode    bool `json:"reset_send_code"`
-	GuestCreateOrder bool `json:"guest_create_order"`
-	GiftCardRedeem   bool `json:"gift_card_redeem"`
+	Login              bool `json:"login"`
+	RegisterSendCode   bool `json:"register_send_code"`
+	ResetSendCode      bool `json:"reset_send_code"`
+	GuestCreateOrder   bool `json:"guest_create_order"`
+	GiftCardRedeem     bool `json:"gift_card_redeem"`
+	CommissionTransfer bool `json:"commission_transfer"` // 佣金转余额验证码
+	Withdraw           bool `json:"withdraw"`            // 提现申请验证码
 }
 
 // CaptchaImageSetting 图片验证码配置
@@ -54,11 +56,13 @@ type CaptchaSetting struct {
 
 // CaptchaScenePatch 场景配置补丁
 type CaptchaScenePatch struct {
-	Login            *bool `json:"login"`
-	RegisterSendCode *bool `json:"register_send_code"`
-	ResetSendCode    *bool `json:"reset_send_code"`
-	GuestCreateOrder *bool `json:"guest_create_order"`
-	GiftCardRedeem   *bool `json:"gift_card_redeem"`
+	Login              *bool `json:"login"`
+	RegisterSendCode   *bool `json:"register_send_code"`
+	ResetSendCode      *bool `json:"reset_send_code"`
+	GuestCreateOrder   *bool `json:"guest_create_order"`
+	GiftCardRedeem     *bool `json:"gift_card_redeem"`
+	CommissionTransfer *bool `json:"commission_transfer"` // 佣金转余额验证码
+	Withdraw           *bool `json:"withdraw"`            // 提现申请验证码
 }
 
 // CaptchaImagePatch 图片配置补丁
@@ -238,11 +242,13 @@ func CaptchaSettingToMap(setting CaptchaSetting) map[string]interface{} {
 	return map[string]interface{}{
 		"provider": normalized.Provider,
 		"scenes": map[string]interface{}{
-			"login":              normalized.Scenes.Login,
-			"register_send_code": normalized.Scenes.RegisterSendCode,
-			"reset_send_code":    normalized.Scenes.ResetSendCode,
-			"guest_create_order": normalized.Scenes.GuestCreateOrder,
-			"gift_card_redeem":   normalized.Scenes.GiftCardRedeem,
+			"login":               normalized.Scenes.Login,
+			"register_send_code":  normalized.Scenes.RegisterSendCode,
+			"reset_send_code":     normalized.Scenes.ResetSendCode,
+			"guest_create_order":  normalized.Scenes.GuestCreateOrder,
+			"gift_card_redeem":    normalized.Scenes.GiftCardRedeem,
+			"commission_transfer": normalized.Scenes.CommissionTransfer,
+			"withdraw":            normalized.Scenes.Withdraw,
 		},
 		"image": map[string]interface{}{
 			"length":         normalized.Image.Length,
@@ -268,11 +274,13 @@ func MaskCaptchaSettingForAdmin(setting CaptchaSetting) models.JSON {
 	return models.JSON{
 		"provider": normalized.Provider,
 		"scenes": map[string]interface{}{
-			"login":              normalized.Scenes.Login,
-			"register_send_code": normalized.Scenes.RegisterSendCode,
-			"reset_send_code":    normalized.Scenes.ResetSendCode,
-			"guest_create_order": normalized.Scenes.GuestCreateOrder,
-			"gift_card_redeem":   normalized.Scenes.GiftCardRedeem,
+			"login":               normalized.Scenes.Login,
+			"register_send_code":  normalized.Scenes.RegisterSendCode,
+			"reset_send_code":     normalized.Scenes.ResetSendCode,
+			"guest_create_order":  normalized.Scenes.GuestCreateOrder,
+			"gift_card_redeem":    normalized.Scenes.GiftCardRedeem,
+			"commission_transfer": normalized.Scenes.CommissionTransfer,
+			"withdraw":            normalized.Scenes.Withdraw,
 		},
 		"image": map[string]interface{}{
 			"length":         normalized.Image.Length,
@@ -377,6 +385,12 @@ func (s *SettingService) PatchCaptchaSetting(defaultCfg config.CaptchaConfig, pa
 		if patch.Scenes.GiftCardRedeem != nil {
 			next.Scenes.GiftCardRedeem = *patch.Scenes.GiftCardRedeem
 		}
+		if patch.Scenes.CommissionTransfer != nil {
+			next.Scenes.CommissionTransfer = *patch.Scenes.CommissionTransfer
+		}
+		if patch.Scenes.Withdraw != nil {
+			next.Scenes.Withdraw = *patch.Scenes.Withdraw
+		}
 	}
 	if patch.Image != nil {
 		if patch.Image.Length != nil {
@@ -446,6 +460,8 @@ func captchaSettingFromJSON(raw models.JSON, fallback CaptchaSetting) CaptchaSet
 			next.Scenes.ResetSendCode = readBool(scenesMap, "reset_send_code", next.Scenes.ResetSendCode)
 			next.Scenes.GuestCreateOrder = readBool(scenesMap, "guest_create_order", next.Scenes.GuestCreateOrder)
 			next.Scenes.GiftCardRedeem = readBool(scenesMap, "gift_card_redeem", next.Scenes.GiftCardRedeem)
+			next.Scenes.CommissionTransfer = readBool(scenesMap, "commission_transfer", next.Scenes.CommissionTransfer)
+			next.Scenes.Withdraw = readBool(scenesMap, "withdraw", next.Scenes.Withdraw)
 		}
 	}
 
