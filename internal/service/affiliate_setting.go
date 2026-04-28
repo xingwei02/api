@@ -33,7 +33,7 @@ func AffiliateDefaultSetting() AffiliateSetting {
 	return NormalizeAffiliateSetting(AffiliateSetting{
 		Enabled:           false,
 		CommissionRate:    0,
-		ConfirmDays:       0,
+		ConfirmDays:       1, // 24小时后自动结算
 		MinWithdrawAmount: 0,
 		WithdrawChannels:  []string{},
 	})
