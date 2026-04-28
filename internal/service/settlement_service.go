@@ -320,6 +320,38 @@ func (s *SettlementService) TransferCommissionToBalance(userID uint, verifyCode,
 	})
 }
 
+// ============================================================================
+// 自动结算相关
+// ============================================================================
+
+// AutoSettlePendingCommissions 自动结算已过期的待结算佣金
+// 将 status='pending' 且 available_at < now 的记录改为 'available'
+func (s *SettlementService) AutoSettlePendingCommissions(ctx context.Context) (int64, error) {
+	if s.db == nil {
+		return 0, errors.New("database not initialized")
+	}
+
+	now := time.Now()
+
+	// 更新所有已过期的待结算佣金
+	result := s.db.WithContext(ctx).
+		Model(&models.AffiliateCommission{}).
+		Where("status = ? AND available_at < ? AND transferred_to_balance = ?",
+			constants.AffiliateCommissionStatusPendingConfirm,
+			now,
+			false).
+		Updates(map[string]interface{}{
+			"status":     constants.AffiliateCommissionStatusAvailable,
+			"updated_at": now,
+		})
+
+	if result.Error != nil {
+		return 0, fmt.Errorf("auto settle failed: %w", result.Error)
+	}
+
+	return result.RowsAffected, nil
+}
+
 // ApplyWithdraw 申请提现（带邮箱验证码）
 // 红线1：金额处理必须用decimal.Decimal
 // 红线2：字段映射 AlipayAccount→Account, RealName→AlipayName, RequireRealName→RequireRealname
