@@ -83,6 +83,7 @@ const (
 	WalletTxnTypeAdminAdjust = "admin_adjust"
 	WalletTxnTypeAdminRefund = "admin_refund"
 	WalletTxnTypeGiftCard    = "gift_card_redeem"
+	WalletTxnTypeCommission  = "commission_transfer"
 )
 
 // 钱包交易方向常量

@@ -13,6 +13,7 @@ import (
 	"github.com/dujiao-next/internal/models"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // SettlementService 结算服务
@@ -247,6 +248,7 @@ func (s *SettlementService) TransferCommissionToBalance(userID uint, verifyCode,
 		// 这样避免“用户只转入 1.00，但 1.25 整笔佣金被标记已转”导致差额丢失。
 		remaining := amount
 		selectedCommissionCount := 0
+		selectedCommissionIDs := make([]uint, 0)
 		now := time.Now()
 		for _, comm := range commissions {
 			if remaining.LessThanOrEqual(decimal.Zero) {
@@ -269,6 +271,7 @@ func (s *SettlementService) TransferCommissionToBalance(userID uint, verifyCode,
 					return err
 				}
 				selectedCommissionCount++
+				selectedCommissionIDs = append(selectedCommissionIDs, comm.ID)
 				remaining = remaining.Sub(commAmount).Round(2)
 				continue
 			}
@@ -304,6 +307,7 @@ func (s *SettlementService) TransferCommissionToBalance(userID uint, verifyCode,
 				return err
 			}
 			selectedCommissionCount++
+			selectedCommissionIDs = append(selectedCommissionIDs, comm.ID)
 			remaining = decimal.Zero
 			break
 		}
@@ -311,19 +315,20 @@ func (s *SettlementService) TransferCommissionToBalance(userID uint, verifyCode,
 			return fmt.Errorf("转账金额%s超过可用佣金总额%s", amount.StringFixed(2), totalAvailable.StringFixed(2))
 		}
 
-		// 9. 获取用户余额（带乐观锁）
-		var balance models.UserBalance
-		err = tx.Where("user_id = ?", userID).First(&balance).Error
+		// 9. 入账到“个人中心-我的钱包”。
+		// 注意：佣金转钱包不是把未结算佣金结算为可用佣金，也不是增加推广结算余额；
+		// 它的业务语义是：扣减已可转的佣金池，增加用户真正可消费/提现的钱包余额。
+		var wallet models.WalletAccount
+		err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("user_id = ?", userID).First(&wallet).Error
 		if err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
-				// 创建初始余额
-				balance = models.UserBalance{
-					UserID:             userID,
-					AffiliateProfileID: &profile.ID,
-					Balance:            0,
-					Version:            1,
+				wallet = models.WalletAccount{
+					UserID:    userID,
+					Balance:   models.NewMoneyFromDecimal(decimal.Zero),
+					CreatedAt: now,
+					UpdatedAt: now,
 				}
-				if createErr := tx.Create(&balance).Error; createErr != nil {
+				if createErr := tx.Create(&wallet).Error; createErr != nil {
 					return createErr
 				}
 			} else {
@@ -331,36 +336,42 @@ func (s *SettlementService) TransferCommissionToBalance(userID uint, verifyCode,
 			}
 		}
 
-		// 10. 更新余额（乐观锁，红线1：decimal计算）
-		oldVersion := balance.Version
-		amountFloat64, _ := amount.Float64()
-		result := tx.Model(&models.UserBalance{}).
-			Where("user_id = ? AND version = ?", userID, oldVersion).
+		before := wallet.Balance.Decimal.Round(2)
+		after := before.Add(amount).Round(2)
+		if err := tx.Model(&models.WalletAccount{}).
+			Where("id = ?", wallet.ID).
 			Updates(map[string]interface{}{
-				"balance":      gorm.Expr("balance + ?", amountFloat64),
-				"total_income": gorm.Expr("total_income + ?", amountFloat64),
-				"version":      gorm.Expr("version + 1"),
-			})
-
-		if result.Error != nil {
-			return result.Error
-		}
-		if result.RowsAffected == 0 {
-			return errors.New("余额更新失败，请重试")
+				"balance":    models.NewMoneyFromDecimal(after),
+				"updated_at": now,
+			}).Error; err != nil {
+			return ErrWalletAccountUpdateFailed
 		}
 
-		// 11. 记录余额明细
-		log := models.UserBalanceLog{
+		// 10. 记录个人中心钱包明细，个人中心“我的钱包-钱包明细”会显示这条收入。
+		txn := models.WalletTransaction{
 			UserID:        userID,
-			Type:          models.BalanceLogTypeCommissionTransfer,
-			Amount:        amountFloat64,
-			BalanceBefore: balance.Balance,
-			BalanceAfter:  balance.Balance + amountFloat64,
-			Description:   fmt.Sprintf("佣金转入余额，共%d笔", selectedCommissionCount),
-			RelatedType:   "commission",
+			Type:          constants.WalletTxnTypeCommission,
+			Direction:     constants.WalletTxnDirectionIn,
+			Amount:        models.NewMoneyFromDecimal(amount),
+			BalanceBefore: models.NewMoneyFromDecimal(before),
+			BalanceAfter:  models.NewMoneyFromDecimal(after),
+			Currency:      "CNY",
+			Reference:     fmt.Sprintf("commission_transfer:%d:%d", userID, now.UnixNano()),
+			Remark:        fmt.Sprintf("佣金转入钱包，共%d笔", selectedCommissionCount),
 			CreatedAt:     now,
+			UpdatedAt:     now,
 		}
-		return tx.Create(&log).Error
+		if err := tx.Create(&txn).Error; err != nil {
+			return ErrWalletTransactionCreateFailed
+		}
+		if len(selectedCommissionIDs) > 0 {
+			if err := tx.Model(&models.AffiliateCommission{}).
+				Where("id IN ?", selectedCommissionIDs).
+				Updates(map[string]interface{}{"balance_txn_id": txn.ID, "updated_at": now}).Error; err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 
