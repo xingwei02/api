@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"context"
@@ -239,16 +240,75 @@ func (s *SettlementService) TransferCommissionToBalance(userID uint, verifyCode,
 			return fmt.Errorf("转账金额%s超过可用佣金总额%s", amount.StringFixed(2), totalAvailable.StringFixed(2))
 		}
 
-		// 8. 按时间顺序扣减佣金，直到凑够金额
+		// 8. 按时间顺序扣减佣金，直到凑够金额。
+		// 如果最后一笔佣金金额大于剩余待转金额，必须拆分佣金记录：
+		// - 原记录保留本次实际转入金额，并标记为已转余额；
+		// - 新记录保留剩余金额，仍为 available 且 transferred_to_balance=false。
+		// 这样避免“用户只转入 1.00，但 1.25 整笔佣金被标记已转”导致差额丢失。
 		remaining := amount
-		var selectedCommissions []models.AffiliateCommission
+		selectedCommissionCount := 0
+		now := time.Now()
 		for _, comm := range commissions {
 			if remaining.LessThanOrEqual(decimal.Zero) {
 				break
 			}
-			commAmount := comm.CommissionAmount.Decimal
-			selectedCommissions = append(selectedCommissions, comm)
-			remaining = remaining.Sub(commAmount)
+
+			commAmount := comm.CommissionAmount.Decimal.Round(2)
+			if commAmount.LessThanOrEqual(decimal.Zero) {
+				continue
+			}
+
+			if commAmount.LessThanOrEqual(remaining) {
+				if err := tx.Model(&models.AffiliateCommission{}).
+					Where("id = ? AND status = ? AND transferred_to_balance = ?", comm.ID, constants.AffiliateCommissionStatusAvailable, false).
+					Updates(map[string]interface{}{
+						"transferred_to_balance": true,
+						"transfer_time":          now,
+						"updated_at":             now,
+					}).Error; err != nil {
+					return err
+				}
+				selectedCommissionCount++
+				remaining = remaining.Sub(commAmount).Round(2)
+				continue
+			}
+
+			// 最后一笔金额大于剩余转入金额：拆分为“已转部分 + 剩余可转部分”。
+			transferPart := remaining.Round(2)
+			remainPart := commAmount.Sub(transferPart).Round(2)
+
+			remainCommission := comm
+			remainCommission.ID = 0
+			remainCommission.CommissionType = buildCommissionTransferSplitType(comm.ID)
+			remainCommission.CommissionAmount = models.NewMoneyFromDecimal(remainPart)
+			remainCommission.Status = constants.AffiliateCommissionStatusAvailable
+			remainCommission.WithdrawRequestID = nil
+			remainCommission.InvalidReason = ""
+			remainCommission.TransferredToBalance = false
+			remainCommission.TransferTime = nil
+			remainCommission.BalanceTxnID = nil
+			remainCommission.CreatedAt = now
+			remainCommission.UpdatedAt = now
+			if err := tx.Create(&remainCommission).Error; err != nil {
+				return err
+			}
+
+			if err := tx.Model(&models.AffiliateCommission{}).
+				Where("id = ? AND status = ? AND transferred_to_balance = ?", comm.ID, constants.AffiliateCommissionStatusAvailable, false).
+				Updates(map[string]interface{}{
+					"commission_amount":      models.NewMoneyFromDecimal(transferPart),
+					"transferred_to_balance": true,
+					"transfer_time":          now,
+					"updated_at":             now,
+				}).Error; err != nil {
+				return err
+			}
+			selectedCommissionCount++
+			remaining = decimal.Zero
+			break
+		}
+		if remaining.GreaterThan(decimal.Zero) {
+			return fmt.Errorf("转账金额%s超过可用佣金总额%s", amount.StringFixed(2), totalAvailable.StringFixed(2))
 		}
 
 		// 9. 获取用户余额（带乐观锁）
@@ -289,35 +349,29 @@ func (s *SettlementService) TransferCommissionToBalance(userID uint, verifyCode,
 			return errors.New("余额更新失败，请重试")
 		}
 
-		// 11. 标记选中的佣金已转账
-		now := time.Now()
-		var commissionIDs []uint
-		for _, comm := range selectedCommissions {
-			commissionIDs = append(commissionIDs, comm.ID)
-		}
-		err = tx.Model(&models.AffiliateCommission{}).
-			Where("id IN ?", commissionIDs).
-			Updates(map[string]interface{}{
-				"transferred_to_balance": true,
-				"transfer_time":          now,
-			}).Error
-		if err != nil {
-			return err
-		}
-
-		// 12. 记录余额明细
+		// 11. 记录余额明细
 		log := models.UserBalanceLog{
 			UserID:        userID,
 			Type:          models.BalanceLogTypeCommissionTransfer,
 			Amount:        amountFloat64,
 			BalanceBefore: balance.Balance,
 			BalanceAfter:  balance.Balance + amountFloat64,
-			Description:   fmt.Sprintf("佣金转入余额，共%d笔", len(selectedCommissions)),
+			Description:   fmt.Sprintf("佣金转入余额，共%d笔", selectedCommissionCount),
 			RelatedType:   "commission",
 			CreatedAt:     now,
 		}
 		return tx.Create(&log).Error
 	})
+}
+
+func buildCommissionTransferSplitType(sourceID uint) string {
+	suffix := strconv.FormatInt(time.Now().UnixNano()%1000000, 10)
+	base := "bt" + strconv.FormatUint(uint64(sourceID), 36)
+	result := base + suffix
+	if len(result) > 20 {
+		return result[:20]
+	}
+	return result
 }
 
 // ============================================================================
